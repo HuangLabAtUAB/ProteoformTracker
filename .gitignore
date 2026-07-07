@@ -1,0 +1,24 @@
+# Reference clone (not part of this codebase, kept for porting reference)
+/reference/
+
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Data caches / large downloads (regenerated, not committed)
+/data/*
+!/data/.gitkeep
+
+# OS
+.DS_Store
+
+# Local Claude Code session permissions (machine-specific)
+.claude/settings.local.json

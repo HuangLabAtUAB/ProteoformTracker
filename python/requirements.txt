@@ -1,0 +1,4 @@
+# pyteomics 5.0 uses PEP 604 "X | Y" type-hint syntax, which fails to import
+# on Python < 3.10 (this project's target venv runs the macOS system Python
+# 3.9 by default). Pin below 5.0 until the venv is moved to Python >= 3.10.
+pyteomics<5.0

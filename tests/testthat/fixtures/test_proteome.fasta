@@ -1,0 +1,8 @@
+>PROT1 first test protein
+MAGCKWERTYAGCKWERTY
+>PROT2 second test protein, similar mass to PROT1 (different gene, no shared identity)
+MSILVDFGHPQRSTNVLKI
+>PROT3 much larger unrelated protein
+MADEFGHIKLMNPQRSTVWYADEFGHIKLMNPQRSTVWYADEFGHIKLMNPQRSTVWYADEFGHIKLMNPQRSTVWY
+>PROT4 contains non-standard residue, should be skipped
+MAGCKXWERTY
