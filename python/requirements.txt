@@ -2,3 +2,7 @@
 # on Python < 3.10 (this project's target venv runs the macOS system Python
 # 3.9 by default). Pin below 5.0 until the venv is moved to Python >= 3.10.
 pyteomics<5.0
+
+# reticulate declares its own internal numpy preference on load; installing
+# it here just keeps that check quiet, we don't use numpy directly.
+numpy
