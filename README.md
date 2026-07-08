@@ -9,7 +9,9 @@ See `ptracker_vibe.md` (design spec) for full scope, scoring model, and roadmap.
 **Phase 1 — core data model and mass engine** (in progress)
 - [x] `Proteoform` schema (`R/proteoform_schema.R`)
 - [x] Mass calculation with N/C-terminal processing + optional PTMs (`R/mass_calculation.R`)
-- [x] Offline precomputed reference-proteome mass index (`R/reference_proteome_index.R`)
+- [x] Offline precomputed reference-proteome mass index (`R/reference_proteome_index.R`), built from
+      the human reviewed canonical proteome (UniProt `UP000005640`, 20,391 sequences after filtering
+      non-standard residues) via `scripts/build_reference_proteome.R`
 
 Phases 2-4 (resolvability scoring, fragmentation/MS2, validation) not yet started.
 
@@ -24,6 +26,10 @@ renv::restore()
 
 # 2. Create the Python venv + install pinned pyteomics
 Rscript scripts/setup_python_env.R
+
+# 3. Download the reference proteome and build the confounding-protein mass index
+# (data/ is gitignored -- this regenerates it; takes ~1-2 min)
+Rscript scripts/build_reference_proteome.R
 ```
 
 Run the test suite:

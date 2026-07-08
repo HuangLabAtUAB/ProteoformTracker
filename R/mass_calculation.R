@@ -27,6 +27,21 @@ init_mass_calculation_engine <- function() {
   reticulate::import("pyteomics.mass", convert = TRUE)
 }
 
+#' Lazily source python/ptracker_mass.py and cache its batch_calculate_mass
+#' function. `script_path` is relative to the caller's working directory
+#' (project root for the app/scripts; tests pass their own relative path).
+.batch_mass_fn <- local({
+  fn <- NULL
+  function(script_path = "python/ptracker_mass.py") {
+    if (is.null(fn)) {
+      env <- new.env()
+      reticulate::source_python(script_path, envir = env)
+      fn <<- env$batch_calculate_mass
+    }
+    fn
+  }
+})
+
 #' Monoisotopic or average mass of a bare amino acid sequence (no PTMs),
 #' via pyteomics.mass.calculate_mass.
 #'
@@ -35,6 +50,24 @@ init_mass_calculation_engine <- function() {
 sequence_mass <- function(sequence, average = FALSE) {
   pm <- .pyteomics_mass()
   pm$calculate_mass(sequence = sequence, average = average)
+}
+
+#' Monoisotopic or average masses for many sequences in a single Python
+#' round-trip (a list comprehension over pyteomics.mass.calculate_mass),
+#' rather than one reticulate call per sequence. Used when building the
+#' reference-proteome mass index (tens of thousands of sequences).
+#'
+#' @param sequences character vector of amino acid sequences
+#' @param average if TRUE, return average mass; otherwise monoisotopic
+#' @param script_path path to python/ptracker_mass.py, relative to the
+#'   current working directory
+#' @return numeric vector of masses, same length/order as sequences
+sequence_masses_batch <- function(sequences, average = FALSE,
+                                   script_path = "python/ptracker_mass.py") {
+  batch_fn <- .batch_mass_fn(script_path)
+  # unname(): a named list would convert to a Python dict, and iterating a
+  # dict yields keys (the names) instead of the sequences themselves.
+  unlist(batch_fn(as.list(unname(sequences)), average))
 }
 
 #' Total mass of a Proteoform: bare-sequence mass + sum of PTM mass deltas.

@@ -20,6 +20,13 @@ read_fasta <- function(path) {
   sequences
 }
 
+#' Extract the bare UniProt accession from a "sp|ACCESSION|ENTRY_NAME" or
+#' "tr|ACCESSION|ENTRY_NAME" style FASTA header token. Falls back to the
+#' input unchanged if it doesn't match that pattern (e.g. non-UniProt FASTA).
+parse_uniprot_accession <- function(id) {
+  ifelse(grepl("^(sp|tr)\\|", id), sub("^(sp|tr)\\|([^|]+)\\|.*$", "\\2", id), id)
+}
+
 #' Build the offline reference-proteome mass index.
 #'
 #' One-time (per proteome release) computation: translates every sequence's
@@ -32,8 +39,11 @@ read_fasta <- function(path) {
 #'   proteome)
 #' @param output_path where to save the index (.rds)
 #' @param average if TRUE, index average mass; otherwise monoisotopic
+#' @param script_path path to python/ptracker_mass.py, relative to the
+#'   current working directory (passed through to sequence_masses_batch())
 #' @return the index data.frame (invisibly), also written to output_path
-build_reference_mass_index <- function(fasta_path, output_path, average = FALSE) {
+build_reference_mass_index <- function(fasta_path, output_path, average = FALSE,
+                                        script_path = "python/ptracker_mass.py") {
   init_mass_calculation_engine()
   sequences <- read_fasta(fasta_path)
 
@@ -47,13 +57,13 @@ build_reference_mass_index <- function(fasta_path, output_path, average = FALSE)
     predict_nterminal_met_excision(s)$mature_sequence
   }, character(1))
 
-  masses <- vapply(mature_sequences, function(s) sequence_mass(s, average = average), numeric(1))
+  masses <- sequence_masses_batch(mature_sequences, average = average, script_path = script_path)
 
   index <- data.frame(
-    id = names(sequences),
+    id = parse_uniprot_accession(names(sequences)),
     sequence = unname(mature_sequences),
     length = nchar(mature_sequences),
-    mass = unname(masses),
+    mass = masses,
     stringsAsFactors = FALSE
   )
   index <- index[order(index$mass), ]

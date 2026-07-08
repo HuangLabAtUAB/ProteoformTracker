@@ -15,4 +15,22 @@ function(input, output, session) {
       )
     })
   })
+
+  observeEvent(input$confound_search, {
+    output$confound_result <- renderTable({
+      req(input$confound_mass, input$confound_window)
+      if (is.null(reference_mass_index)) {
+        return(data.frame(message = "No reference mass index loaded -- run scripts/build_reference_proteome.R"))
+      }
+      hits <- query_confounding_proteins(
+        reference_mass_index,
+        target_mass = input$confound_mass,
+        window_da = input$confound_window
+      )
+      if (nrow(hits) == 0) {
+        return(data.frame(message = "No entries within this mass window"))
+      }
+      hits[, c("id", "length", "mass")]
+    })
+  })
 }

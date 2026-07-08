@@ -28,3 +28,11 @@ test_that("average mass is greater than monoisotopic mass for the same sequence"
   avg <- sequence_mass("MAGCKWERTY", average = TRUE)
   expect_gt(avg, mono)
 })
+
+test_that("sequence_masses_batch matches per-sequence sequence_mass", {
+  skip_if_not(mass_engine_available, "pyteomics/reticulate not available")
+  seqs <- c("G", "AGCK", "MAGCKWERTY")
+  batch <- sequence_masses_batch(seqs, script_path = "../../python/ptracker_mass.py")
+  singles <- vapply(seqs, sequence_mass, numeric(1))
+  expect_equal(unname(batch), unname(singles), tolerance = 1e-6)
+})
