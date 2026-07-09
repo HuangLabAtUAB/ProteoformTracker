@@ -6,14 +6,27 @@ See `ptracker_vibe.md` (design spec) for full scope, scoring model, and roadmap.
 
 ## Status
 
-**Phase 1 — core data model and mass engine** (in progress)
-- [x] `Proteoform` schema (`R/proteoform_schema.R`)
+**Phase 1 — core data model and mass engine** (done)
+- [x] `Proteoform` schema (`R/proteoform_schema.R`), including N-terminal Met excision and
+      user-supplied signal peptide/propeptide cleavage sites
 - [x] Mass calculation with N/C-terminal processing + optional PTMs (`R/mass_calculation.R`)
+- [x] Curated Unimod lookup table for common PTMs (`R/unimod_table.R`, `unimod_ptm("Phospho", site)`) --
+      not the full Unimod database; falls back to `ptm()` with a manual mass delta for anything else
 - [x] Offline precomputed reference-proteome mass index (`R/reference_proteome_index.R`), built from
       the human reviewed canonical proteome (UniProt `UP000005640`, 20,391 sequences after filtering
       non-standard residues) via `scripts/build_reference_proteome.R`
 
-Phases 2-4 (resolvability scoring, fragmentation/MS2, validation) not yet started.
+**Phase 2 — resolvability scoring and MS1 visualization** (scoring engine done; visualization not yet wired into the app)
+- [x] Orbitrap R(m/z) resolving-power model + mass-domain ΔM_FWHM (`R/resolving_power.R`)
+- [x] Charge-state envelope prediction (basic-residue-count ceiling for small denatured proteoforms,
+      Rayleigh-limit scaling otherwise) + relative S/N penalty model (`R/charge_envelope.R`)
+- [x] Averagine isotope-envelope width model (`R/isotope_envelope.R`) -- closed-form binomial-moments
+      approximation, not full combinatorial isotopologue enumeration (intractable at intact-protein scale)
+- [x] MS1 resolvability verdict + envelope-crowding cross-proteoform m/z collision check
+      (`R/ms1_scoring.R`)
+- [ ] MS1 m/z envelope overlay visualization in the app (prototyped standalone, not yet wired into `ui.R`/`server.R`)
+
+Phases 3-4 (fragmentation/MS2, validation) not yet started.
 
 ## Setup
 

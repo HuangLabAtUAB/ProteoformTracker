@@ -6,10 +6,12 @@ library(reticulate)
 
 # SOURCE CORE MODULES (Phase 1: data model + mass engine)
 source("R/proteoform_schema.R")
+source("R/unimod_table.R")
 source("R/mass_calculation.R")
 source("R/reference_proteome_index.R")
 source("R/resolving_power.R")
 source("R/charge_envelope.R")
+source("R/isotope_envelope.R")
 source("R/ms1_scoring.R")
 
 # Point reticulate at the project's Python venv and confirm pyteomics loads.

@@ -31,25 +31,43 @@ test_that("ms1_resolvability classifies resolvable/marginal/not-resolvable relat
   expect_equal(result_not$verdict, "not-resolvable")
 })
 
-test_that("ms1_resolvability flags envelope_interleave_risk above 25 kDa", {
+test_that("ms1_resolvability flags envelope_interleave_risk when Delta-mass is smaller than the isotope envelope width", {
   skip_if_not(mass_engine_available, "pyteomics/reticulate not available")
 
-  small_seq <- test_proteoform_sequence(2) # small enough to stay under 25 kDa
-  large_seq <- test_proteoform_sequence(40) # comfortably over 25 kDa
+  seq <- test_proteoform_sequence()
+  target <- proteoform(id = "target", sequence = seq, provenance = "manual")
+  target_mass <- proteoform_mass(target)$mass
+  isotope_fwhm <- averagine_isotope_envelope(target_mass)$fwhm
 
-  small_target <- proteoform(id = "small", sequence = small_seq, provenance = "manual")
-  small_candidate <- proteoform(
-    id = "small_cand", sequence = small_seq,
-    ptms = list(ptm(site = 1, mass_delta_mono = 5, name = "d")), provenance = "manual"
-  )
-  large_target <- proteoform(id = "large", sequence = large_seq, provenance = "manual")
-  large_candidate <- proteoform(
-    id = "large_cand", sequence = large_seq,
-    ptms = list(ptm(site = 1, mass_delta_mono = 5, name = "d")), provenance = "manual"
-  )
+  make_candidate <- function(id, delta) {
+    proteoform(
+      id = id, sequence = seq,
+      ptms = list(ptm(site = 1, mass_delta_mono = delta, name = "d")),
+      provenance = "manual"
+    )
+  }
 
-  expect_false(ms1_resolvability(small_target, small_candidate)$envelope_interleave_risk)
-  expect_true(ms1_resolvability(large_target, large_candidate)$envelope_interleave_risk)
+  # Delta-mass well inside the isotope envelope's own width -> interleaving risk
+  small_delta_result <- ms1_resolvability(target, make_candidate("small_delta", isotope_fwhm * 0.1))
+  expect_true(small_delta_result$envelope_interleave_risk)
+
+  # Delta-mass well beyond the isotope envelope's width -> no interleaving risk
+  large_delta_result <- ms1_resolvability(target, make_candidate("large_delta", isotope_fwhm * 5))
+  expect_false(large_delta_result$envelope_interleave_risk)
+})
+
+test_that("isotope envelope interleaving risk can trip well below 25-30 kDa for small Delta-mass pairs", {
+  skip_if_not(mass_engine_available, "pyteomics/reticulate not available")
+
+  seq <- test_proteoform_sequence(6) # a modest-size proteoform, well under 25 kDa
+  target <- proteoform(id = "small_target", sequence = seq, provenance = "manual")
+  candidate <- proteoform(
+    id = "small_candidate", sequence = seq,
+    ptms = list(ptm(site = 1, mass_delta_mono = 0.5, name = "d")), provenance = "manual"
+  )
+  result <- ms1_resolvability(target, candidate)
+  expect_lt(result$target_mass, 25000)
+  expect_true(result$envelope_interleave_risk)
 })
 
 test_that("envelope_crowding_check flags identical-mass peaks from different proteoforms", {

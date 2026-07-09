@@ -11,11 +11,20 @@ DEFAULT_SAFETY_MARGIN <- 1.75 # spec recommends 1.5-2x over DeltaM_FWHM
 #' Predicts the target's charge-state envelope, takes the best (smallest)
 #' mass-domain FWHM across that envelope, and compares
 #' best-case ΔM_FWHM x safety_margin against the pair's actual Δmass.
-#' Above ~25-30 kDa isotope envelopes themselves widen enough that even a
+#'
+#' Separately (per the design spec) flags `envelope_interleave_risk`: above
+#' ~25-30 kDa, isotope envelopes themselves widen enough that even a
 #' perfectly resolving instrument may not cleanly separate close
-#' proteoforms -- this is an empirical threshold (see design spec), not
-#' derived from R(m/z); flagged here as `envelope_interleave_risk` rather
-#' than folded silently into the verdict.
+#' proteoforms. This is computed, not a hardcoded mass cutoff -- via
+#' averagine_isotope_envelope() (R/isotope_envelope.R), risk is flagged
+#' whenever the pair's actual Δmass is smaller than the width of the
+#' isotope envelope itself: even though each individual isotope peak may be
+#' instrumentally well-resolved, the two proteoforms' isotope combs overlap
+#' peak-for-peak across most of their span, so a given peak can't be
+#' unambiguously assigned to one proteoform vs the other. This can trip at
+#' masses below 25-30 kDa for small-Δmass pairs, and not trip above it for
+#' large-Δmass pairs -- consistent with the spec's caveat but not reducible
+#' to a single mass threshold.
 #'
 #' @param target,candidate proteoform objects (see proteoform_schema.R)
 #' @param mode "denatured" or "native"
@@ -24,7 +33,8 @@ DEFAULT_SAFETY_MARGIN <- 1.75 # spec recommends 1.5-2x over DeltaM_FWHM
 #' @param safety_margin multiplier applied to best-case ΔM_FWHM before
 #'   comparing to actual Δmass (spec: 1.5-2x)
 #' @return list with masses, delta_mass, best charge state/FWHM, verdict,
-#'   envelope_interleave_risk flag, and the full per-charge-state FWHM table
+#'   isotope envelope stats, envelope_interleave_risk flag, and the full
+#'   per-charge-state FWHM table
 ms1_resolvability <- function(target, candidate, mode = c("denatured", "native"),
                                average = FALSE, r_ref = 120000, mz_ref = 200,
                                safety_margin = DEFAULT_SAFETY_MARGIN) {
@@ -51,6 +61,8 @@ ms1_resolvability <- function(target, candidate, mode = c("denatured", "native")
     "not-resolvable"
   }
 
+  isotope_envelope <- averagine_isotope_envelope(target_mass)
+
   list(
     target_id = target$id,
     candidate_id = candidate$id,
@@ -61,7 +73,9 @@ ms1_resolvability <- function(target, candidate, mode = c("denatured", "native")
     best_fwhm_mass = best_fwhm,
     safety_margin = safety_margin,
     verdict = verdict,
-    envelope_interleave_risk = target_mass > 25000 || candidate_mass > 25000,
+    isotope_envelope_mean_shift = isotope_envelope$mean_shift,
+    isotope_envelope_fwhm = isotope_envelope$fwhm,
+    envelope_interleave_risk = delta_mass < isotope_envelope$fwhm,
     fwhm_table = fwhm_tbl,
     mode = mode
   )
