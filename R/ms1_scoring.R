@@ -5,6 +5,18 @@
 
 DEFAULT_SAFETY_MARGIN <- 1.75 # spec recommends 1.5-2x over DeltaM_FWHM
 
+#' A proteoform's own best-case (smallest) mass-domain FWHM, from its
+#' predicted charge-state envelope. Shared by ms1_resolvability() and
+#' search_confounding_proteins() so both use the same definition of "how
+#' close is too close" for a given target.
+.best_case_fwhm <- function(proteoform, mode, average, r_ref, mz_ref) {
+  mass <- proteoform_mass(proteoform, average = average)$mass
+  envelope <- predict_charge_envelope(proteoform$sequence, mass, mode = mode)
+  fwhm_tbl <- fwhm_by_charge_state(mass, envelope$z, r_ref = r_ref, mz_ref = mz_ref)
+  best_idx <- attr(fwhm_tbl, "best")
+  list(mass = mass, best_fwhm = fwhm_tbl$fwhm_mass[best_idx], best_z = fwhm_tbl$z[best_idx], fwhm_table = fwhm_tbl)
+}
+
 #' MS1 resolvability verdict for a candidate pair (target vs. a relevant
 #' isoform, or target vs. a confounding protein).
 #'
@@ -43,15 +55,14 @@ ms1_resolvability <- function(target, candidate, mode = c("denatured", "native")
     stop("ms1_resolvability() requires proteoform objects")
   }
 
-  target_mass <- proteoform_mass(target, average = average)$mass
   candidate_mass <- proteoform_mass(candidate, average = average)$mass
+  target_fwhm <- .best_case_fwhm(target, mode, average, r_ref, mz_ref)
+  target_mass <- target_fwhm$mass
   delta_mass <- abs(target_mass - candidate_mass)
 
-  envelope <- predict_charge_envelope(target$sequence, target_mass, mode = mode)
-  fwhm_tbl <- fwhm_by_charge_state(target_mass, envelope$z, r_ref = r_ref, mz_ref = mz_ref)
-  best_idx <- attr(fwhm_tbl, "best")
-  best_fwhm <- fwhm_tbl$fwhm_mass[best_idx]
-  best_z <- fwhm_tbl$z[best_idx]
+  fwhm_tbl <- target_fwhm$fwhm_table
+  best_fwhm <- target_fwhm$best_fwhm
+  best_z <- target_fwhm$best_z
 
   verdict <- if (delta_mass >= safety_margin * best_fwhm) {
     "resolvable"
@@ -78,6 +89,55 @@ ms1_resolvability <- function(target, candidate, mode = c("denatured", "native")
     envelope_interleave_risk = delta_mass < isotope_envelope$fwhm,
     fwhm_table = fwhm_tbl,
     mode = mode
+  )
+}
+
+#' Select mass-domain confounding-protein candidates from the offline
+#' reference-proteome mass index (R/reference_proteome_index.R), using a
+#' search window derived from the target's own resolving-power model rather
+#' than a fixed Da value -- the same "how close is too close" definition
+#' ms1_resolvability() uses to call a pair marginal/not-resolvable, so a
+#' candidate surfaced by this search is, by construction, never going to
+#' independently score as cleanly "resolvable" against the target.
+#'
+#' This is the mass-domain half of confounding-protein selection. It will
+#' not surface a candidate whose own mass is far from the target's but whose
+#' charge-state peaks still collide with the target's in m/z (see
+#' R/mz_collision_index.R for that case).
+#'
+#' @param target proteoform object
+#' @param mass_index reference-proteome mass index (from
+#'   build_/load_reference_mass_index())
+#' @param mode "denatured" or "native"
+#' @param average use average mass instead of monoisotopic
+#' @param r_ref,mz_ref Orbitrap resolving-power settings
+#' @param safety_margin multiplier applied to best-case ΔM_FWHM to size the
+#'   search window (spec: 1.5-2x)
+#' @param exclude_id id to exclude from results (defaults to the target's
+#'   own id, in case it is itself part of the reference proteome)
+#' @return list(window_da, best_fwhm_mass, best_charge_state, candidates)
+search_confounding_proteins <- function(target, mass_index, mode = c("denatured", "native"),
+                                         average = FALSE, r_ref = 120000, mz_ref = 200,
+                                         safety_margin = DEFAULT_SAFETY_MARGIN,
+                                         exclude_id = target$id) {
+  mode <- match.arg(mode)
+  if (!inherits(target, "proteoform")) {
+    stop("search_confounding_proteins() requires a proteoform object")
+  }
+
+  target_fwhm <- .best_case_fwhm(target, mode, average, r_ref, mz_ref)
+  window_da <- safety_margin * target_fwhm$best_fwhm
+
+  candidates <- query_confounding_proteins(
+    mass_index, target_fwhm$mass,
+    window_da = window_da, exclude_id = exclude_id
+  )
+
+  list(
+    window_da = window_da,
+    best_fwhm_mass = target_fwhm$best_fwhm,
+    best_charge_state = target_fwhm$best_z,
+    candidates = candidates
   )
 }
 

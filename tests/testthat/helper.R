@@ -8,6 +8,7 @@ source("../../R/resolving_power.R")
 source("../../R/charge_envelope.R")
 source("../../R/isotope_envelope.R")
 source("../../R/ms1_scoring.R")
+source("../../R/mz_collision_index.R")
 
 mass_engine_available <- tryCatch({
   init_mass_calculation_engine()

@@ -24,6 +24,13 @@ See `ptracker_vibe.md` (design spec) for full scope, scoring model, and roadmap.
       approximation, not full combinatorial isotopologue enumeration (intractable at intact-protein scale)
 - [x] MS1 resolvability verdict + envelope-crowding cross-proteoform m/z collision check
       (`R/ms1_scoring.R`)
+- [x] Confounding-protein selection, both axes: `search_confounding_proteins()` (mass domain --
+      window auto-derived from ΔM_FWHM x safety margin, not a fixed Da value) and
+      `search_mz_collisions()` (m/z domain, against a precomputed per-acquisition-mode index,
+      `R/mz_collision_index.R` + `scripts/build_mz_collision_index.R`) -- catches confounders whose
+      *mass* is far from the target but whose charge-state peaks still collide in m/z (real example:
+      a protein ~4000 Da away colliding at 3 separate charge-state pairs because the two masses sit
+      in a ~4:3 ratio)
 - [ ] MS1 m/z envelope overlay visualization in the app (prototyped standalone, not yet wired into `ui.R`/`server.R`)
 
 Phases 3-4 (fragmentation/MS2, validation) not yet started.
@@ -43,6 +50,9 @@ Rscript scripts/setup_python_env.R
 # 3. Download the reference proteome and build the confounding-protein mass index
 # (data/ is gitignored -- this regenerates it; takes ~1-2 min)
 Rscript scripts/build_reference_proteome.R
+
+# 4. Build the m/z-domain collision index (pure R, no Python; ~10s)
+Rscript scripts/build_mz_collision_index.R
 ```
 
 Run the test suite:

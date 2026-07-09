@@ -70,6 +70,34 @@ test_that("isotope envelope interleaving risk can trip well below 25-30 kDa for 
   expect_true(result$envelope_interleave_risk)
 })
 
+test_that("search_confounding_proteins sizes its window from FWHM x safety_margin and excludes the target", {
+  skip_if_not(mass_engine_available, "pyteomics/reticulate not available")
+
+  seq <- test_proteoform_sequence()
+  target <- proteoform(id = "target", sequence = seq, provenance = "manual")
+  target_mass <- proteoform_mass(target)$mass
+  best_fwhm <- min(fwhm_by_charge_state(target_mass, predict_charge_envelope(seq, target_mass, "denatured")$z)$fwhm_mass)
+  safety_margin <- DEFAULT_SAFETY_MARGIN
+  window <- safety_margin * best_fwhm
+
+  mass_index <- data.frame(
+    id = c("target", "just_inside", "just_outside", "far_away"),
+    sequence = seq,
+    length = nchar(seq),
+    mass = c(target_mass, target_mass + window * 0.5, target_mass + window * 3, target_mass + 5000),
+    stringsAsFactors = FALSE
+  )
+  mass_index <- mass_index[order(mass_index$mass), ]
+
+  result <- search_confounding_proteins(target, mass_index, mode = "denatured", safety_margin = safety_margin)
+
+  expect_equal(result$window_da, window, tolerance = 1e-9)
+  expect_false("target" %in% result$candidates$id)
+  expect_true("just_inside" %in% result$candidates$id)
+  expect_false("just_outside" %in% result$candidates$id)
+  expect_false("far_away" %in% result$candidates$id)
+})
+
 test_that("envelope_crowding_check flags identical-mass peaks from different proteoforms", {
   skip_if_not(mass_engine_available, "pyteomics/reticulate not available")
 
