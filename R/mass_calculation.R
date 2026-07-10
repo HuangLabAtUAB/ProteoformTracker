@@ -27,20 +27,33 @@ init_mass_calculation_engine <- function() {
   reticulate::import("pyteomics.mass", convert = TRUE)
 }
 
-#' Lazily source python/ptracker_mass.py and cache its batch_calculate_mass
-#' function. `script_path` is relative to the caller's working directory
-#' (project root for the app/scripts; tests pass their own relative path).
-.batch_mass_fn <- local({
-  fn <- NULL
+#' Lazily source python/ptracker_mass.py once and cache the resulting
+#' environment (batch_calculate_mass, batch_ion_mass). `script_path` is
+#' relative to the caller's working directory (project root for the
+#' app/scripts; tests pass their own relative path).
+.ptracker_mass_env <- local({
+  env <- NULL
   function(script_path = "python/ptracker_mass.py") {
-    if (is.null(fn)) {
-      env <- new.env()
-      reticulate::source_python(script_path, envir = env)
-      fn <<- env$batch_calculate_mass
+    if (is.null(env)) {
+      # Only cache on success: assigning `env` before source_python() could
+      # throw would permanently poison the cache with an empty environment
+      # after any transient failure (wrong cwd, missing file), breaking
+      # every subsequent call for the rest of the R session.
+      new_env <- new.env()
+      reticulate::source_python(script_path, envir = new_env)
+      env <<- new_env
     }
-    fn
+    env
   }
 })
+
+.batch_mass_fn <- function(script_path = "python/ptracker_mass.py") {
+  .ptracker_mass_env(script_path)$batch_calculate_mass
+}
+
+.batch_ion_mass_fn <- function(script_path = "python/ptracker_mass.py") {
+  .ptracker_mass_env(script_path)$batch_ion_mass
+}
 
 #' Monoisotopic or average mass of a bare amino acid sequence (no PTMs),
 #' via pyteomics.mass.calculate_mass.
@@ -68,6 +81,26 @@ sequence_masses_batch <- function(sequences, average = FALSE,
   # unname(): a named list would convert to a Python dict, and iterating a
   # dict yields keys (the names) instead of the sequences themselves.
   unlist(batch_fn(as.list(unname(sequences)), average))
+}
+
+#' Neutral fragment-ion masses (b/y/c/z, etc. -- see pyteomics.mass.std_ion_comp)
+#' for many subsequences in a single Python round-trip. Neutral, not
+#' charged: add PROTON_MASS * z and divide by z (mz_for_charge(), see
+#' R/resolving_power.R) to get an m/z at a given fragment charge state,
+#' the same convention used for intact-proteoform mass throughout this
+#' project.
+#'
+#' @param sequences character vector of amino acid subsequences (e.g.
+#'   N-terminal prefixes for b-ions, C-terminal suffixes for y-ions)
+#' @param ion_type ion series, e.g. "b" or "y"
+#' @param average if TRUE, return average mass; otherwise monoisotopic
+#' @param script_path path to python/ptracker_mass.py, relative to the
+#'   current working directory
+#' @return numeric vector of neutral masses, same length/order as sequences
+sequence_ion_masses_batch <- function(sequences, ion_type, average = FALSE,
+                                       script_path = "python/ptracker_mass.py") {
+  batch_fn <- .batch_ion_mass_fn(script_path)
+  unlist(batch_fn(as.list(unname(sequences)), ion_type, average))
 }
 
 #' Total mass of a Proteoform: bare-sequence mass + sum of PTM mass deltas.

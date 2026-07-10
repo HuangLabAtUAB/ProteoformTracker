@@ -10,6 +10,9 @@ source("../../R/charge_envelope.R")
 source("../../R/isotope_envelope.R")
 source("../../R/ms1_scoring.R")
 source("../../R/mz_collision_index.R")
+source("../../R/fragment_ladder.R")
+
+TEST_PY_SCRIPT <- "../../python/ptracker_mass.py"
 
 mass_engine_available <- tryCatch({
   init_mass_calculation_engine()

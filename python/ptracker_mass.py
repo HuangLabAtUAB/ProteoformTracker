@@ -10,3 +10,7 @@ from pyteomics import mass
 
 def batch_calculate_mass(sequences, average=False):
     return [mass.calculate_mass(sequence=s, average=average) for s in sequences]
+
+
+def batch_ion_mass(sequences, ion_type, average=False):
+    return [mass.calculate_mass(sequence=s, ion_type=ion_type, average=average) for s in sequences]
