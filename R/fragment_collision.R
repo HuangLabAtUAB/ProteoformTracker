@@ -88,10 +88,15 @@ fragment_mass_collision_check <- function(target, candidates, average = FALSE, c
 #' identical up to the sequence divergence point (typically a differential
 #' exon) and uniformly offset beyond it.
 #'
+#' "Colinear" requires both the same aligned position (no indel yet) AND
+#' the same residue there -- a same-length point substitution (no indel at
+#' all) still breaks fragment-mass identity from that position on, even
+#' though the alignment itself never introduces a gap.
+#'
 #' @param target,candidate proteoform objects
 #' @return list(b_shared_length, y_shared_length) -- number of residues
 #'   from the N-/C-terminus, respectively, where the two sequences remain
-#'   perfectly colinear (same residue at the same relative position)
+#'   identical (same residue at the same relative position)
 find_fragment_divergence_point <- function(target, candidate) {
   if (!inherits(target, "proteoform") || !inherits(candidate, "proteoform")) {
     stop("find_fragment_divergence_point() requires proteoform objects")
@@ -100,12 +105,14 @@ find_fragment_divergence_point <- function(target, candidate) {
   candidate_seq <- candidate$sequence
   n_target <- nchar(target_seq)
   n_candidate <- nchar(candidate_seq)
+  target_chars <- strsplit(target_seq, "")[[1]]
+  candidate_chars <- strsplit(candidate_seq, "")[[1]]
 
   map <- align_sequences(target_seq, candidate_seq)
 
   b_shared_length <- 0
   for (i in seq_len(n_target)) {
-    if (is.na(map[i]) || map[i] != i) break
+    if (is.na(map[i]) || map[i] != i || target_chars[i] != candidate_chars[map[i]]) break
     b_shared_length <- i
   }
 
@@ -113,7 +120,10 @@ find_fragment_divergence_point <- function(target, candidate) {
   for (k in seq_len(n_target)) {
     target_pos <- n_target - k + 1
     candidate_pos <- n_candidate - k + 1
-    if (candidate_pos < 1 || is.na(map[target_pos]) || map[target_pos] != candidate_pos) break
+    if (candidate_pos < 1 || is.na(map[target_pos]) || map[target_pos] != candidate_pos ||
+      target_chars[target_pos] != candidate_chars[candidate_pos]) {
+      break
+    }
     y_shared_length <- k
   }
 

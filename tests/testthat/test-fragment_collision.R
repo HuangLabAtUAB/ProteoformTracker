@@ -13,6 +13,22 @@ test_that("find_fragment_divergence_point locates the correct shared prefix/suff
   expect_equal(result$b_shared_length + result$y_shared_length, nchar(target_seq))
 })
 
+test_that("find_fragment_divergence_point detects a same-length point substitution (no indel)", {
+  # Real bug found validating against HBG1/HBG2 (P69891/P69892): they're the
+  # same length, differing only by point substitutions, so the alignment
+  # never introduces a gap (map[i] == i everywhere) -- b/y_shared_length
+  # must still stop at the substitution, not just check alignment position.
+  target_seq <- "AAAAAGGGGGSLLLLLVVVVV"
+  substituted_seq <- "AAAAAGGGGGQLLLLLVVVVV" # S -> Q at position 11, same length
+
+  target <- proteoform(id = "target", sequence = target_seq, provenance = "manual")
+  substituted <- proteoform(id = "substituted", sequence = substituted_seq, provenance = "manual")
+
+  result <- find_fragment_divergence_point(target, substituted)
+  expect_equal(result$b_shared_length, 10)
+  expect_equal(result$y_shared_length, 10)
+})
+
 test_that("find_fragment_divergence_point locates the correct shared prefix/suffix across a deletion", {
   target_seq <- "AAAAAGGGGGSLLLLLVVVVV"
   iso_deleted_seq <- "AAAAAGGGGGVVVVV" # the S/L block is spliced out
