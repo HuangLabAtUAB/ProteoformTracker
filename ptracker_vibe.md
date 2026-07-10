@@ -155,6 +155,11 @@ Not repeated: GTF/GFF parsing, minimap2, TransDecoder, rMATS parsing (already in
 - S/N model is relative/normalized against a user-supplied baseline, not an absolute detectability prediction.
 - Does not model gas-phase rescue strategies (proton transfer charge reduction, ion mobility) that can recover discrimination when standard MS1/MS2 falls short — a "marginal" verdict means "standard workflow likely insufficient," not "impossible under every workflow."
 - Orbitrap R(m/z) scaling law is instrument-family specific — FT-ICR or other platforms need a different resolving-power relationship.
+- PTMs are propagated from a target proteoform onto its relevant-isoform set (with site-position mapping via pairwise alignment, skipping isoforms where the site is absent or the mapped residue doesn't match — see `propagate_ptms_to_relevant_set()`), but never onto the confounding-protein set. PTM occupancy is sample/condition-specific biology, not a fixed proteome property, so there is no canonical "modified state" of an unrelated background protein to precompute — the confounding-protein search (both mass- and m/z-domain) always assumes unmodified reference sequences.
+
+## Future considerations (deferred, not yet built)
+
+- **Confounder PTM caveat check**: a lightweight, opt-in sanity check that widens the confounding-protein search window by a user-specified common PTM mass delta (e.g. +80 Da for phospho) and reports whether that changes the candidate set — flags *whether* PTM-driven confounding could plausibly matter for a given target, without trying to enumerate which specific background proteins might carry the modification (which isn't knowable from sequence alone). Deferred in favor of documenting the limitation above; revisit if real validation cases show it's needed.
 
 ## Reference reading
 

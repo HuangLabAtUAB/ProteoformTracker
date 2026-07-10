@@ -2,6 +2,7 @@ library(testthat)
 
 source("../../R/proteoform_schema.R")
 source("../../R/unimod_table.R")
+source("../../R/ptm_site_mapping.R")
 source("../../R/mass_calculation.R")
 source("../../R/reference_proteome_index.R")
 source("../../R/resolving_power.R")

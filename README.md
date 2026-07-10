@@ -12,6 +12,10 @@ See `ptracker_vibe.md` (design spec) for full scope, scoring model, and roadmap.
 - [x] Mass calculation with N/C-terminal processing + optional PTMs (`R/mass_calculation.R`)
 - [x] Curated Unimod lookup table for common PTMs (`R/unimod_table.R`, `unimod_ptm("Phospho", site)`) --
       not the full Unimod database; falls back to `ptm()` with a manual mass delta for anything else
+- [x] PTM propagation onto relevant isoforms (`R/ptm_site_mapping.R`): maps a PTM's site across isoforms
+      via pairwise alignment, skipping (with a stated reason) isoforms where the site is absent or the
+      mapped residue doesn't match. Deliberately not run against the confounding-protein set -- PTM
+      occupancy isn't a fixed proteome property the way sequence is (see `ptracker_vibe.md` limitations)
 - [x] Offline precomputed reference-proteome mass index (`R/reference_proteome_index.R`), built from
       the human reviewed canonical proteome (UniProt `UP000005640`, 20,391 sequences after filtering
       non-standard residues) via `scripts/build_reference_proteome.R`
