@@ -16,6 +16,8 @@ source("R/isotope_envelope.R")
 source("R/ms1_scoring.R")
 source("R/mz_collision_index.R")
 source("R/fragment_ladder.R")
+source("R/fragmentation_propensity.R")
+source("R/fragment_collision.R")
 
 # Point reticulate at the project's Python venv and confirm pyteomics loads.
 tryCatch(
