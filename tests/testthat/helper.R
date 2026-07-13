@@ -13,6 +13,7 @@ source("../../R/mz_collision_index.R")
 source("../../R/fragment_ladder.R")
 source("../../R/fragmentation_propensity.R")
 source("../../R/fragment_collision.R")
+source("../../R/reference_exon_index.R")
 
 TEST_PY_SCRIPT <- "../../python/ptracker_mass.py"
 

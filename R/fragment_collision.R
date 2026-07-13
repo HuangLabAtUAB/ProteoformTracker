@@ -81,17 +81,25 @@ fragment_mass_collision_check <- function(target, candidates, average = FALSE, c
 }
 
 #' Where a target's and a candidate's fragment ladders structurally
-#' diverge, via pairwise alignment (align_sequences(), R/ptm_site_mapping.R).
-#' The b-ion ladder is identical up to the N-terminal colinear prefix
-#' length; the y-ion ladder up to the C-terminal colinear suffix length.
-#' Per the design spec's key structural property: two isoforms' ladders are
-#' identical up to the sequence divergence point (typically a differential
-#' exon) and uniformly offset beyond it.
+#' diverge. The b-ion ladder is identical up to the N-terminal colinear
+#' prefix length; the y-ion ladder up to the C-terminal colinear suffix
+#' length. Per the design spec's key structural property: two isoforms'
+#' ladders are identical up to the sequence divergence point (typically a
+#' differential exon) and uniformly offset beyond it.
 #'
-#' "Colinear" requires both the same aligned position (no indel yet) AND
-#' the same residue there -- a same-length point substitution (no indel at
-#' all) still breaks fragment-mass identity from that position on, even
-#' though the alignment itself never introduces a gap.
+#' "Last identical residue from a terminus" is exactly the longest common
+#' prefix/suffix -- a direct O(n) character comparison from each end, not
+#' a general alignment problem. An earlier version routed this through
+#' align_sequences() (Needleman-Wunsch, R/ptm_site_mapping.R), which is
+#' the right tool for mapping an *internal* PTM site across an indel, but
+#' is the wrong tool here: with a plain linear gap penalty, a long indel
+#' can have more than one equal-scoring placement (no cost difference
+#' between one contiguous gap and several fragmented ones), so the
+#' aligner can return *a* valid alignment whose gap start doesn't match
+#' the true longest common prefix. Caught validating against real CD44
+#' isoform data -- the true divergence (a 313-residue exon-skip) is at
+#' residue 223, but the aligner placed its gap at residue 203, undercounting
+#' by 20 residues. Direct prefix/suffix comparison has no such ambiguity.
 #'
 #' @param target,candidate proteoform objects
 #' @return list(b_shared_length, y_shared_length) -- number of residues
@@ -101,29 +109,21 @@ find_fragment_divergence_point <- function(target, candidate) {
   if (!inherits(target, "proteoform") || !inherits(candidate, "proteoform")) {
     stop("find_fragment_divergence_point() requires proteoform objects")
   }
-  target_seq <- target$sequence
-  candidate_seq <- candidate$sequence
-  n_target <- nchar(target_seq)
-  n_candidate <- nchar(candidate_seq)
-  target_chars <- strsplit(target_seq, "")[[1]]
-  candidate_chars <- strsplit(candidate_seq, "")[[1]]
+  target_chars <- strsplit(target$sequence, "")[[1]]
+  candidate_chars <- strsplit(candidate$sequence, "")[[1]]
+  n_target <- length(target_chars)
+  n_candidate <- length(candidate_chars)
 
-  map <- align_sequences(target_seq, candidate_seq)
-
+  max_prefix <- min(n_target, n_candidate)
   b_shared_length <- 0
-  for (i in seq_len(n_target)) {
-    if (is.na(map[i]) || map[i] != i || target_chars[i] != candidate_chars[map[i]]) break
+  for (i in seq_len(max_prefix)) {
+    if (target_chars[i] != candidate_chars[i]) break
     b_shared_length <- i
   }
 
   y_shared_length <- 0
-  for (k in seq_len(n_target)) {
-    target_pos <- n_target - k + 1
-    candidate_pos <- n_candidate - k + 1
-    if (candidate_pos < 1 || is.na(map[target_pos]) || map[target_pos] != candidate_pos ||
-      target_chars[target_pos] != candidate_chars[candidate_pos]) {
-      break
-    }
+  for (k in seq_len(max_prefix)) {
+    if (target_chars[n_target - k + 1] != candidate_chars[n_candidate - k + 1]) break
     y_shared_length <- k
   }
 

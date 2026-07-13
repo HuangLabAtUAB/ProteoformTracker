@@ -37,7 +37,25 @@ See `ptracker_vibe.md` (design spec) for full scope, scoring model, and roadmap.
       in a ~4:3 ratio)
 - [ ] MS1 m/z envelope overlay visualization in the app (prototyped standalone, not yet wired into `ui.R`/`server.R`)
 
-Phases 3-4 (fragmentation/MS2, validation) not yet started.
+**Phase 3 — fragmentation and MS2** (core engine done; full reference-proteome-scale fragment
+collision index not yet built; visualization prototyped standalone, not yet wired into the app)
+- [x] Fragment ladder generation (`R/fragment_ladder.R`), b/y ions only for v1 (HCD/CID; ETD/ECD's
+      c/z ions and internal fragments are out of scope -- see limitations below)
+- [x] Fragmentation propensity model (`R/fragmentation_propensity.R`), HCD/CID only: residue-pair
+      (Pro/Asp enhancement) and terminal-proximity effects, multiplicative. Illustrative multiplier
+      values, not calibrated against real spectra
+- [x] Cross-proteoform fragment mass collision check + sequence divergence-point finder
+      (`R/fragment_collision.R`) -- validated against real CD44 canonical-vs-isoform-11 data
+      (34.2% shared fragment mass despite a ~35 kDa Delta-mass) and a confounding-protein pair with
+      near-identical intact mass (XPR1/Q9UBH6, Delta-mass ~4 Da, MS1 verdict "marginal")
+- [x] Genome-wide exon structure index (`R/reference_exon_index.R` + `scripts/build_exon_index.R`),
+      built from a bulk Ensembl GTF via `rtracklayer` -- all transcripts (not canonical-only, since
+      the relevant-isoform axis needs isoform comparisons), residue-level exon boundaries validated
+      against real CD44 canonical/isoform-11 data
+- [ ] Full reference-proteome-scale fragment collision index (the MS2 analogue of the m/z collision
+      index) -- estimated ~16M fragment masses across 20,391 proteins; scoping deferred
+
+Phase 4 (validation) not yet started.
 
 ## Setup
 
@@ -57,6 +75,13 @@ Rscript scripts/build_reference_proteome.R
 
 # 4. Build the m/z-domain collision index (pure R, no Python; ~10s)
 Rscript scripts/build_mz_collision_index.R
+
+# 5. Download the bulk Ensembl GTF and build the exon structure index
+# (requires the rtracklayer Bioconductor package; GTF is ~140MB)
+mkdir -p data/annotation
+curl -o data/annotation/Homo_sapiens.GRCh38.116.gtf.gz \
+  http://ftp.ensembl.org/pub/release-116/gtf/homo_sapiens/Homo_sapiens.GRCh38.116.gtf.gz
+Rscript scripts/build_exon_index.R
 ```
 
 Run the test suite:

@@ -18,6 +18,7 @@ source("R/mz_collision_index.R")
 source("R/fragment_ladder.R")
 source("R/fragmentation_propensity.R")
 source("R/fragment_collision.R")
+source("R/reference_exon_index.R")
 
 # Point reticulate at the project's Python venv and confirm pyteomics loads.
 tryCatch(
@@ -45,4 +46,12 @@ reference_mz_index <- lapply(reference_mz_index_paths, function(p) {
 })
 if (all(vapply(reference_mz_index, is.null, logical(1)))) {
   message("No m/z collision index found -- run scripts/build_mz_collision_index.R to enable m/z-domain confounding-protein search.")
+}
+
+reference_exon_index_path <- "data/reference_exon_index.rds"
+reference_exon_index <- if (file.exists(reference_exon_index_path)) {
+  load_reference_exon_index(reference_exon_index_path)
+} else {
+  message("No exon index found -- run scripts/build_exon_index.R to enable exon-track lookups by gene/transcript.")
+  NULL
 }
