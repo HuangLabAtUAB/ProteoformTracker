@@ -20,6 +20,16 @@ source("R/fragmentation_propensity.R")
 source("R/fragment_collision.R")
 source("R/reference_exon_index.R")
 
+# SOURCE PHASE 4 MODULES (real entry page: gene/isoform/proteoform pathway)
+source("R/ptm_spec_parser.R")
+source("R/ensembl_protein_fetch.R")
+source("R/gene_isoform_data.R")
+source("R/fasta_pipeline.R")
+source("R/svg_render.R")
+source("R/exon_axis_alignment.R")
+source("R/digestion.R")
+source("R/viz_json.R")
+
 # Point reticulate at the project's Python venv and confirm pyteomics loads.
 tryCatch(
   init_mass_calculation_engine(),

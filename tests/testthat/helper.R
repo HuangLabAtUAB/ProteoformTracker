@@ -14,6 +14,8 @@ source("../../R/fragment_ladder.R")
 source("../../R/fragmentation_propensity.R")
 source("../../R/fragment_collision.R")
 source("../../R/reference_exon_index.R")
+source("../../R/ptm_spec_parser.R")
+source("../../R/ensembl_protein_fetch.R")
 
 TEST_PY_SCRIPT <- "../../python/ptracker_mass.py"
 

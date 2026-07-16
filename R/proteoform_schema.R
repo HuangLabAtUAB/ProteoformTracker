@@ -7,6 +7,7 @@ VALID_PROVENANCE <- c(
   "module1_isoform_selection",
   "module2_longread_orf",
   "module3_rmats_event",
+  "module_middledown_digest",
   "manual"
 )
 
