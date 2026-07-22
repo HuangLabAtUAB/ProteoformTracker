@@ -470,7 +470,6 @@ build_exon_alignment_preview <- function(alignment, known_transcript_ids, exon_i
   track_dfs <- c(list(novel_df), known_dfs)
   track_labels <- c(novel_label, known_labels)
   track_ids <- c(NA_character_, known_transcript_ids)
-  n_tracks <- length(track_dfs)
 
   track_cds <- lapply(seq_along(track_ids), function(ti) {
     if (ti == 1) {
@@ -482,6 +481,46 @@ build_exon_alignment_preview <- function(alignment, known_transcript_ids, exon_i
       NULL
     }
   })
+
+  build_multi_track_exon_alignment(track_dfs, track_labels, alignment$seqname, alignment$strand, track_cds)
+}
+
+#' Shared core of the multi-track exon alignment payload consumed by
+#' PT.renderExonAlignment() (www/ptracker_viz.js): given each track's own
+#' exon (start,end) genomic coordinates and label, builds the
+#' axis-compressed (introns squeezed to a fixed gap, not to scale),
+#' shared-count-tiered (common/partial/unique) payload. Split out of
+#' build_exon_alignment_preview() (Option 2: 1 novel sequence + N known
+#' transcripts) so Option 3 (rMATS: N known transcripts compared against
+#' each other, no novel row) can reuse the exact same axis/tiering logic
+#' instead of duplicating it -- both callers just differ in how track_dfs/
+#' track_cds are assembled beforehand.
+#'
+#' @param track_dfs list of data.frames, each with $start/$end (that
+#'   track's own exon genomic coordinates)
+#' @param track_labels character vector, same length as track_dfs
+#' @param seqname chromosome name
+#' @param strand "+" or "-"
+#' @param track_cds list, same length as track_dfs: each element either
+#'   NULL (coding status unknown for that track, block renders solid) or a
+#'   data.frame with $start/$end giving that track's own coding (CDS)
+#'   genomic sub-ranges (block renders with a translucent UTR base +
+#'   full-opacity CDS overlay)
+#' @param highlight_regions optional list of list(start=,end=,label=)
+#'   genomic ranges to flag independently of the common/partial/unique tier
+#'   coloring (e.g. Option 3's rMATS differential exon(s)) -- converted to
+#'   the same axis coordinate space as the tracks themselves and returned
+#'   as `highlights`, so PT.renderExonAlignment() can box any track block
+#'   that exactly matches one, on top of its normal tier fill. A region
+#'   that lands in a gap no track covers is silently dropped (no block
+#'   could ever match it, and axis mapping doesn't cover between-track gaps).
+#' @return list(seqname, strand, axis_length, tracks = list(list(label,
+#'   blocks), ...), n_tracks, highlights = list(list(start=,end=,label=),
+#'   ...)) -- see build_exon_alignment_preview()'s own doc comment for the
+#'   exact block shape
+build_multi_track_exon_alignment <- function(track_dfs, track_labels, seqname, strand, track_cds = NULL, highlight_regions = NULL) {
+  n_tracks <- length(track_dfs)
+  if (is.null(track_cds)) track_cds <- vector("list", n_tracks)
 
   # Coverage super-intervals: merge any OVERLAPPING exon boundaries across
   # all tracks (regardless of exact match) so real intron gaps -- stretches
@@ -504,7 +543,6 @@ build_exon_alignment_preview <- function(alignment, known_transcript_ids, exon_i
   super_df <- do.call(rbind, supers)
   super_df$length <- super_df$end - super_df$start + 1
 
-  strand <- alignment$strand
   if (strand == "-") super_df <- super_df[rev(seq_len(nrow(super_df))), ]
 
   n_supers <- nrow(super_df)
@@ -571,5 +609,16 @@ build_exon_alignment_preview <- function(alignment, known_transcript_ids, exon_i
     list(label = track_labels[ti], blocks = blocks)
   })
 
-  list(seqname = alignment$seqname, strand = strand, axis_length = axis_length, tracks = tracks, n_tracks = n_tracks)
+  highlights <- list()
+  if (!is.null(highlight_regions) && length(highlight_regions) > 0) {
+    highlights <- Filter(Negate(is.null), lapply(highlight_regions, function(h) {
+      si <- find_super(h$start, h$end)
+      if (is.na(si)) return(NULL)
+      ax_a <- to_axis(h$start, si); ax_b <- to_axis(h$end, si)
+      list(start = min(ax_a, ax_b), end = max(ax_a, ax_b), label = h$label %||% NULL)
+    }))
+  }
+
+  list(seqname = seqname, strand = strand, axis_length = axis_length, tracks = tracks,
+       n_tracks = n_tracks, highlights = highlights)
 }

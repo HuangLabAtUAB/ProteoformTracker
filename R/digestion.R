@@ -132,6 +132,33 @@ digest_sequence_for_pool <- function(id, sequence, enzyme, mass_min_da, mass_max
   )
 }
 
+#' Builds the single "intact protein" fallback candidate for a proteoform
+#' whose digest has no real fragment (at any missed-cleavage count) landing
+#' in the mass window -- see digest_proteoform()'s doc comment for why this
+#' exists. Bypasses the mass window entirely (that's the point: guarantee
+#' this proteoform is representable one way or another) and reuses the
+#' parent's own PTMs unchanged (no site remapping needed since start=1).
+.intact_fallback_candidate <- function(pf, parent_id, mode, r_ref, mz_ref, average) {
+  n <- nchar(pf$sequence)
+  pep_id <- sprintf("%s_intact", parent_id)
+  pep_pf <- proteoform(
+    id = pep_id, sequence = pf$sequence, ptms = pf$ptms,
+    provenance = "module_middledown_digest",
+    metadata = list(parent_id = parent_id, start = 1L, end = n, missed_cleavages = NA_integer_, is_intact = TRUE)
+  )
+  mass <- proteoform_mass(pf, average = average)$mass
+  fwhm_info <- .best_case_fwhm(pep_pf, mode, average, r_ref, mz_ref)
+  ms2_prop <- if (n >= 2) mean(fragmentation_propensity(pep_pf, mode = mode)$propensity_score) else NA_real_
+  candidates <- data.frame(
+    id = pep_id, parent_id = parent_id, start = 1L, end = n, length = n,
+    missed_cleavages = NA_integer_, mass = mass,
+    ms1_fwhm_da = fwhm_info$best_fwhm, ms1_best_z = fwhm_info$best_z,
+    ms2_avg_propensity = ms2_prop, ptm_sites_covered = length(pf$ptms),
+    is_intact = TRUE, stringsAsFactors = FALSE
+  )
+  list(candidates = candidates, peptides = setNames(list(pep_pf), pep_id))
+}
+
 #' Simulate limited-digestion middle-down peptides from a full-length
 #' proteoform: every fragment between any two cleavage sites (any number of
 #' missed cleavages), filtered to a target mass window (applied to the
@@ -163,7 +190,9 @@ digest_sequence_for_pool <- function(id, sequence, enzyme, mass_min_da, mass_max
 #'   should pass that key explicitly so candidate ids/parent_id stay
 #'   consistent with however the caller looks its own proteoforms up.
 #' @return list(candidates = data.frame or NULL, peptides = named list of
-#'   proteoform objects, one per surviving candidate id)
+#'   proteoform objects, one per surviving candidate id). candidates$is_intact
+#'   is TRUE for the intact-protein fallback row (see below), FALSE for a
+#'   real digest fragment.
 digest_proteoform <- function(pf, enzyme, mass_min_da, mass_max_da,
                                mode = c("denatured", "native"),
                                r_ref = 120000, mz_ref = 200, average = FALSE,
@@ -175,7 +204,17 @@ digest_proteoform <- function(pf, enzyme, mass_min_da, mass_max_da,
   sites <- find_cleavage_sites(sequence, enzyme)
   boundaries <- c(0L, sites, n)
   k <- length(boundaries)
-  if (k < 2) return(list(candidates = NULL, peptides = list()))
+  # A sparse-cleavage-site enzyme (e.g. OmpT's rare dibasic sites) on a
+  # protein where none of the resulting fragments happen to land in the
+  # mass window previously meant this protein contributed NOTHING to
+  # "Run analysis" even when explicitly checked in the Result proteoform
+  # table -- confirmed as a real point of user confusion, since a checked-
+  # but-silently-excluded proteoform looks identical to a bug. Falling back
+  # to the intact protein as its own single candidate guarantees every
+  # checked proteoform is representable in the comparison one way or
+  # another; it's clearly flagged (is_intact) so it reads as "no digest
+  # fragment qualified" rather than a real middle-down peptide.
+  if (k < 2) return(.intact_fallback_candidate(pf, parent_id, mode, r_ref, mz_ref, average))
 
   # Every (i, j) pair of boundary indices, i < j, is one candidate fragment;
   # missed_cleavages counts how many real cleavage sites fall strictly
@@ -209,7 +248,7 @@ digest_proteoform <- function(pf, enzyme, mass_min_da, mass_max_da,
 
   mass <- bare_masses + ptm_delta
   keep <- mass >= mass_min_da & mass <= mass_max_da
-  if (!any(keep)) return(list(candidates = NULL, peptides = list()))
+  if (!any(keep)) return(.intact_fallback_candidate(pf, parent_id, mode, r_ref, mz_ref, average))
 
   starts <- starts[keep]; ends <- ends[keep]; missed <- missed[keep]
   substrings <- substrings[keep]; mass <- mass[keep]
@@ -253,7 +292,7 @@ digest_proteoform <- function(pf, enzyme, mass_min_da, mass_max_da,
       missed_cleavages = missed[idx], mass = mass[idx],
       ms1_fwhm_da = fwhm_info$best_fwhm, ms1_best_z = fwhm_info$best_z,
       ms2_avg_propensity = ms2_prop, ptm_sites_covered = length(local_ptms),
-      stringsAsFactors = FALSE
+      is_intact = FALSE, stringsAsFactors = FALSE
     )
   }
   candidates <- do.call(rbind, rows)
@@ -277,7 +316,15 @@ digest_proteoform <- function(pf, enzyme, mass_min_da, mass_max_da,
 #' @return list(candidates = combined data.frame (NULL if nothing survived),
 #'   peptides = combined named list of proteoform objects,
 #'   parent_label = named vector id -> parent's display label,
-#'   parent_iso_key = named vector id -> parent's iso_key)
+#'   parent_iso_key = named vector id -> parent's iso_key,
+#'   parent_counts = data.frame(parent_id, label, n_candidates, is_intact_only)
+#'     -- ALWAYS one row per proteoform in pf_list. digest_proteoform() now
+#'     always returns at least one row (falling back to the intact protein
+#'     when no real digest fragment lands in the mass window -- see its doc
+#'     comment), so n_candidates is never really 0 here; is_intact_only flags
+#'     the fallback case so callers can still surface "no digest fragment in
+#'     window for this protease" instead of it silently looking like a
+#'     normal single-candidate result)
 digest_proteoform_set <- function(pf_list, labels, iso_keys, enzyme, mass_min_da, mass_max_da,
                                    mode = c("denatured", "native"), r_ref = 120000, mz_ref = 200, average = FALSE) {
   mode <- match.arg(mode)
@@ -285,6 +332,8 @@ digest_proteoform_set <- function(pf_list, labels, iso_keys, enzyme, mass_min_da
   all_peptides <- list()
   parent_label <- character(0)
   parent_iso_key <- character(0)
+  parent_counts <- vector("list", length(pf_list))
+  names(parent_counts) <- names(pf_list)
 
   for (id in names(pf_list)) {
     # parent_id = id (the CALLER's own list key, e.g. derived()$rows'
@@ -296,6 +345,10 @@ digest_proteoform_set <- function(pf_list, labels, iso_keys, enzyme, mass_min_da
     d <- digest_proteoform(pf_list[[id]], enzyme, mass_min_da, mass_max_da,
                             mode = mode, r_ref = r_ref, mz_ref = mz_ref, average = average,
                             parent_id = id)
+    n_here <- if (is.null(d$candidates)) 0L else nrow(d$candidates)
+    is_intact_only <- !is.null(d$candidates) && all(d$candidates$is_intact)
+    parent_counts[[id]] <- data.frame(parent_id = id, label = labels[[id]] %||% id, n_candidates = n_here,
+                                       is_intact_only = is_intact_only, stringsAsFactors = FALSE)
     if (is.null(d$candidates)) next
     all_candidates[[id]] <- d$candidates
     all_peptides <- c(all_peptides, d$peptides)
@@ -306,7 +359,8 @@ digest_proteoform_set <- function(pf_list, labels, iso_keys, enzyme, mass_min_da
 
   candidates <- if (length(all_candidates) > 0) do.call(rbind, all_candidates) else NULL
   if (!is.null(candidates)) rownames(candidates) <- NULL
-  list(candidates = candidates, peptides = all_peptides, parent_label = parent_label, parent_iso_key = parent_iso_key)
+  list(candidates = candidates, peptides = all_peptides, parent_label = parent_label,
+       parent_iso_key = parent_iso_key, parent_counts = do.call(rbind, parent_counts))
 }
 
 #' Re-base a parent's exon/residue table onto a peptide's own local numbering

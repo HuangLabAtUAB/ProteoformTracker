@@ -23,6 +23,18 @@ fluidPage(
     .pt-mode-group { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; }
     .pt-mode-group .radio-inline { font-size: 16px; font-weight: 600; color: #333; margin-right: 24px; }
     .pt-mode-group input[type='radio'] { transform: scale(1.25); margin-right: 8px; vertical-align: middle; }
+    .pt-pep-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .pt-pep-table th, .pt-pep-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #eee; white-space: nowrap; }
+    .pt-pep-table th { color: #555; font-weight: 600; background: #fafafa; position: sticky; top: 0; }
+    .pt-pep-table .form-group { margin-bottom: 0; }
+    /* This app's Bootstrap (3.x) has no .modal-xl rule -- modalDialog(size='xl')
+       silently falls back to the ~600px default width. Force a wide modal
+       directly rather than depending on a size class the theme doesn't define. */
+    .modal-dialog.modal-xl { width: 95vw; max-width: 1400px; }
+    #btn_run_analysis:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pt-mode-group label.pt-disabled-label { opacity: 0.45; cursor: not-allowed; }
+    #btn_load_gene:disabled, #btn_run_fasta:disabled, #btn_run_rmats:disabled,
+    #btn_set_ms_strategy:disabled, #btn_set_ms_resolution:disabled { opacity: 0.5; cursor: not-allowed; }
   ")),
     tags$script(src = paste0("ptracker_viz.js?v=", as.integer(file.mtime("www/ptracker_viz.js"))))
   ),
@@ -31,11 +43,22 @@ fluidPage(
   div(class = "pt-tagline", "Planning tool for isoform/proteoform-level detectability in top-down and middle-down proteomics"),
 
   div(class = "pt-settings",
-    h4("MS strategy"),
+    fluidRow(
+      column(9, h4("MS strategy")),
+      column(3, div(style = "text-align:right;padding-top:8px;",
+        actionButton("btn_set_ms_strategy", "Set", class = "btn-default")))
+    ),
     p(class = "pt-note", "Top-down analyzes the intact proteoform. Middle-down simulates a limited (partial) protease digestion first, then runs the same MS1/MS2 analysis on the resulting large peptides instead of the intact protein."),
     radioButtons("ms_strategy", NULL, inline = TRUE,
       choices = c("Top-down" = "topdown", "Middle-down" = "middledown"),
       selected = "topdown"
+    ),
+    conditionalPanel("input.ms_strategy == 'topdown'",
+      fluidRow(
+        column(3, numericInput("topdown_mass_min_kda", "Min protein mass (kDa)", value = 10, min = 0, step = 1)),
+        column(3, numericInput("topdown_mass_max_kda", "Max protein mass (kDa)", value = 220, min = 1, step = 1))
+      ),
+      p(class = "pt-note", "Default 10-220 kDa covers the 2.5th-97.5th percentile (~95%) of the reviewed human proteome's intact monoisotopic mass, excluding both small fragments and the long tail of very large proteins (titin, dystrophin, etc.) that are impractical top-down MS targets. Isoforms outside this range are hidden from selection below, and the confounding-protein search pool is limited to it too -- adjust freely for your instrument's real usable mass range.")
     ),
     conditionalPanel("input.ms_strategy == 'middledown'",
       fluidRow(
@@ -48,7 +71,11 @@ fluidPage(
   ),
 
   div(class = "pt-settings",
-    h4("MS resolution parameters"),
+    fluidRow(
+      column(9, h4("MS resolution parameters")),
+      column(3, div(style = "text-align:right;padding-top:8px;",
+        actionButton("btn_set_ms_resolution", "Set", class = "btn-default")))
+    ),
     p(class = "pt-note", "These feed every downstream scoring step (resolving power, envelope crowding, confounder search) regardless of which input path below you use."),
     fluidRow(
       column(3, numericInput("ms_r_ref", "Resolving power R (at reference m/z)", value = 120000, min = 1000, step = 10000)),
@@ -59,7 +86,11 @@ fluidPage(
   ),
 
   div(class = "pt-mode-group",
-    h4("Input selection"),
+    fluidRow(
+      column(9, h4("Input selection")),
+      column(3, div(style = "text-align:right;padding-top:8px;",
+        actionButton("btn_reset_all", "Reset", class = "btn-default")))
+    ),
     radioButtons("input_mode", NULL, inline = TRUE,
       choices = c(
         "1. Gene -> isoform -> proteoform" = "gene",
@@ -67,12 +98,20 @@ fluidPage(
         "3. rMATS alternative-splicing results" = "rmats"
       ),
       selected = "gene"
-    )
+    ),
+    # Hidden flag, distinct from input_mode itself: "Add to comparison" (in
+    # module 2) needs to show the same merged proteoform/MS1/MS2 panel
+    # module 1 uses (same analysis code either way), but flipping the
+    # visible radio itself to "1. Gene..." reads as if the user had left
+    # module 2, when the data underneath is still FASTA-derived. Setting
+    # this instead (server.R) keeps the radio showing "2. FASTA sequence"
+    # while still revealing the shared results panel below.
+    tags$div(style = "display:none;", checkboxInput("force_gene_view", NULL, value = FALSE))
   ),
   hr(),
 
   # ---------------- Option 1: gene -> isoform -> proteoform ----------------
-  conditionalPanel("input.input_mode == 'gene'",
+  conditionalPanel("input.input_mode == 'gene' || input.force_gene_view",
     div(class = "pt-card active",
       h4("Gene / isoform / proteoform selection"),
       fluidRow(
@@ -91,9 +130,10 @@ fluidPage(
       conditionalPanel("input.ms_strategy == 'middledown'",
         hr(),
         h5("Middle-down peptide candidates"),
-        p(class = "pt-note", "Every in-silico digest fragment (any number of missed cleavages) of the checked proteoforms above that falls in the mass window. Sorted by likely feasibility first (fewer missed cleavages, tighter MS1 peak), then by how many PTM sites it covers. Pick which candidate(s) to treat as \"proteins\" for the MS1/MS2 analysis below -- the top-ranked candidate per parent is pre-checked as a starting point."),
-        uiOutput("digestion_candidates_ui"),
-        textOutput("digestion_coverage_text")
+        fluidRow(
+          column(8, textOutput("digestion_summary_text")),
+          column(4, actionButton("btn_open_peptide_picker", "Select peptides...", class = "btn-primary"))
+        )
       ),
       selectInput("pf_target_select", "Confounder-search target", choices = character(0), width = "420px"),
       actionButton("btn_run_analysis", "Run analysis", class = "btn-success"),
@@ -121,7 +161,7 @@ fluidPage(
   ),
 
   # ---------------- Option 2: FASTA upload ----------------
-  conditionalPanel("input.input_mode == 'fasta'",
+  conditionalPanel("input.input_mode == 'fasta' && !input.force_gene_view",
     div(class = "pt-card",
       h4("FASTA sequence input"),
       p(class = "pt-note", "Provide a single spliced mRNA/cDNA (or CDS) nucleotide sequence -- not raw genomic DNA with introns. Two independent steps run: minimap2 spliced-aligns it against GRCh38 to identify which known gene/isoforms it belongs to (this does not depend on translation at all), and TransDecoder separately finds candidate open reading frames. Pick a known isoform to compare its exon structure against, pick which ORF candidate to use as the translation, add PTMs, then send it into the same comparison view as Option 1."),
@@ -133,7 +173,7 @@ fluidPage(
           fileInput("fasta_file", "Choose FASTA file", accept = c(".fa", ".fasta", ".fas", ".txt"))
         )
       ),
-      actionButton("btn_run_fasta", "Align (minimap2) + translate (TransDecoder)", class = "btn-primary"),
+      actionButton("btn_run_fasta", "Run sequence analysis", class = "btn-primary"),
       br(), br(),
       textOutput("fasta_status"),
       uiOutput("fasta_results_ui")
@@ -141,15 +181,33 @@ fluidPage(
   ),
 
   # ---------------- Option 3: rMATS upload ----------------
-  conditionalPanel("input.input_mode == 'rmats'",
+  conditionalPanel("input.input_mode == 'rmats' && !input.force_gene_view",
     div(class = "pt-card",
       h4("rMATS alternative-splicing results"),
-      p(class = "pt-note", "Upload one rMATS output file (SE/A3SS/A5SS/MXE/RI) to convert its AS events into updated exon structures for comparison."),
-      selectInput("rmats_event_type", "Event type", choices = c("SE", "A3SS", "A5SS", "MXE", "RI")),
-      fileInput("rmats_file", "Choose rMATS file", accept = c(".txt", ".JC.txt")),
-      actionButton("btn_run_rmats", "Process rMATS file", class = "btn-primary"),
+      p(class = "pt-note", "rMATS only reports the differential exon(s) and their immediate flanking exons, not the rest of the transcript -- so a full-length proteoform can't be computed from the event alone. Instead, ProteoformTracker looks up which already-annotated transcripts of the gene (in the same precomputed exon index Option 1 uses) structurally match each arm of the event (exon-inclusion vs. exon-skipping for SE; 1st-exon vs. 2nd-exon for MXE), so you get real, full-length proteoforms rather than just the local differential region. If no annotated transcript matches an arm (some events reflect a splicing pattern no single annotated transcript uses), that arm shows no candidates -- constructing a synthetic transcript for that case isn't implemented yet. Only SE (skipped-exon) and MXE (mutually-exclusive-exons) events are supported so far; A3SS/A5SS/RI are a planned follow-up."),
+      fluidRow(
+        column(4, selectInput("rmats_event_type", "Event type", choices = c("SE", "MXE"))),
+        column(6, fileInput("rmats_file", "Choose rMATS SE/MXE results file", accept = c(".txt", ".JC.txt")))
+      ),
+      actionButton("btn_run_rmats", "Find matching transcripts", class = "btn-primary"),
       br(), br(),
-      textOutput("rmats_status")
+      textOutput("rmats_status"),
+      uiOutput("rmats_results_ui"),
+      # Static (not dynamically-generated) SVG/zoom/legend containers, same
+      # as Option 1's s1-ladder/s1-ms1 -- unlike Option 2's exon-align
+      # preview (whose containers live inside fasta_results_ui and are only
+      # ever targeted by a message sent from an observer that necessarily
+      # fires AFTER that UI exists, since it depends on widgets
+      # fasta_results_ui itself creates), Option 3's preview message is sent
+      # from the SAME observer that populates rmats_results_ui, racing that
+      # renderUI's own client push -- keeping these elements always-present
+      # in the DOM from page load avoids that race entirely (confirmed
+      # necessary: with these inside rmats_results_ui instead, the custom
+      # message reliably arrived before the SVG element existed and
+      # silently did nothing).
+      div(id = "rmats-exon-zoom"),
+      tags$svg(id = "rmats-exon-align", class = "pt-viz", viewBox = "0 0 640 160"),
+      div(id = "rmats-exon-align-legend")
     )
   )
 )

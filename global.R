@@ -29,6 +29,7 @@ source("R/svg_render.R")
 source("R/exon_axis_alignment.R")
 source("R/digestion.R")
 source("R/viz_json.R")
+source("R/rmats_adapter.R")
 
 # Point reticulate at the project's Python venv and confirm pyteomics loads.
 tryCatch(

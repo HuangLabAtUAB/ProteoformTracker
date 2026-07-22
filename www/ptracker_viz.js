@@ -10,6 +10,11 @@
 window.PT = (function () {
   const TIER_COLOR = { common: "#eda100", partial: "#8952e0", unique: "#2a78d6", neutral: "#8a8a86" };
   const PX0 = 90, PX1 = 620, ROW_H = 84;
+  // Colors for exon-alignment "highlight" boxes (e.g. Option 3's rMATS
+  // differential exon(s)) -- drawn as a dashed outline ON TOP of a block's
+  // normal common/partial/unique tier fill, cycling if there's more than
+  // one highlight (MXE has two: its 1st and 2nd mutually exclusive exons).
+  const HIGHLIGHT_COLORS = ["#111111", "#0b5fff", "#c0392b"];
   const FILTER_LABELS = ["All fragments", "Elevated (score>1)", "High (score>=4)", "Very high (score>=9)"];
 
   function passesFilter(score, level) {
@@ -466,6 +471,18 @@ window.PT = (function () {
             els += `<rect x="${cx0.toFixed(1)}" y="${top + 10}" width="${Math.max(1, cx1 - cx0).toFixed(1)}" height="12" fill="${tierColor}"/>`;
           });
         }
+        // Box any block that IS one of the event's own differential
+        // exon(s) (e.g. Option 3's rMATS-flagged exon(s)) -- drawn as a
+        // dashed outline on top of the normal tier fill above, exact-match
+        // on axis coordinates since both are derived from the same
+        // genomic->axis mapping. A track that doesn't have this exon
+        // simply has no block here at all, so no box is drawn for it --
+        // that absence is itself the "exon skipped" signal.
+        (payload.highlights || []).forEach((hl, hi) => {
+          if (Math.abs(b.start - hl.start) > 0.5 || Math.abs(b.end - hl.end) > 0.5) return;
+          const hcolor = HIGHLIGHT_COLORS[hi % HIGHLIGHT_COLORS.length];
+          els += `<rect x="${x0.toFixed(1)}" y="${top + 10}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="12" fill="none" stroke="${hcolor}" stroke-width="2" stroke-dasharray="3,2" rx="1.5"/>`;
+        });
       });
     });
 
@@ -475,8 +492,8 @@ window.PT = (function () {
     svgEl.innerHTML = els;
   }
 
-  function exonAlignmentLegendHtml() {
-    return '<div style="display:flex;flex-direction:column;gap:4px;padding:4px 0;font-size:12px;color:#555;">' +
+  function exonAlignmentLegendHtml(highlights) {
+    let h = '<div style="display:flex;flex-direction:column;gap:4px;padding:4px 0;font-size:12px;color:#555;">' +
       '<div style="display:flex;gap:16px;flex-wrap:wrap;">' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:#eda100;border-radius:2px;display:inline-block;"></span>present in all compared</span>' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:#8952e0;border-radius:2px;display:inline-block;"></span>present in some, not all</span>' +
@@ -485,8 +502,17 @@ window.PT = (function () {
       '<div style="display:flex;gap:16px;flex-wrap:wrap;">' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:#eda100;border-radius:2px;display:inline-block;"></span>coding (CDS)</span>' +
       '<span style="display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;background:#eda100;opacity:0.3;border-radius:2px;display:inline-block;"></span>non-coding (UTR)</span>' +
-      "</div>" +
       "</div>";
+    if (highlights && highlights.length) {
+      h += '<div style="display:flex;gap:16px;flex-wrap:wrap;">' +
+        highlights.map((hl, hi) => {
+          const color = HIGHLIGHT_COLORS[hi % HIGHLIGHT_COLORS.length];
+          const label = hl.label || "differential exon";
+          return `<span style="display:flex;align-items:center;gap:6px;"><span style="width:14px;height:10px;border:2px dashed ${color};border-radius:2px;display:inline-block;"></span>${label}</span>`;
+        }).join("") +
+        "</div>";
+    }
+    return h + "</div>";
   }
 
   return {
@@ -500,31 +526,92 @@ if (window.Shiny) {
   // user's zoom/pan doesn't reset on every tweak -- only when the
   // underlying axis actually changes length does the view snap back to
   // full-width, since an old vs/ve pair could otherwise fall outside a
-  // shorter new axis.
-  let exonAlignState = null;
+  // shorter new axis. Keyed by msg.instance so Option 2's (FASTA) and
+  // Option 3's (rMATS) independent exon-alignment previews -- which both
+  // use this one handler, just pointed at their own DOM element ids --
+  // don't clobber each other's zoom/pan state.
+  let exonAlignStates = {};
   Shiny.addCustomMessageHandler("pt_render_exon_alignment", function (msg) {
-    const svgEl = document.getElementById("fasta-exon-align");
-    const legendEl = document.getElementById("fasta-exon-align-legend");
-    const zoomEl = document.getElementById("fasta-exon-zoom");
+    const instance = msg.instance || "fasta";
+    const svgId = msg.svg_id || "fasta-exon-align";
+    const legendId = msg.legend_id || "fasta-exon-align-legend";
+    const zoomId = msg.zoom_id || "fasta-exon-zoom";
+    const idPrefix = msg.id_prefix || "fasta-exon";
+    const svgEl = document.getElementById(svgId);
+    const legendEl = document.getElementById(legendId);
+    const zoomEl = document.getElementById(zoomId);
     if (!svgEl) return;
     const payload = msg.has_data ? msg.payload : null;
-    if (legendEl) legendEl.innerHTML = payload ? PT.exonAlignmentLegendHtml() : "";
-    if (!payload) { PT.renderExonAlignment(svgEl, null); if (zoomEl) zoomEl.innerHTML = ""; exonAlignState = null; return; }
+    if (legendEl) legendEl.innerHTML = payload ? PT.exonAlignmentLegendHtml(payload.highlights) : "";
+    if (!payload) { PT.renderExonAlignment(svgEl, null); if (zoomEl) zoomEl.innerHTML = ""; exonAlignStates[instance] = null; return; }
 
-    if (!exonAlignState || exonAlignState.axisLength !== payload.axis_length) {
-      exonAlignState = { vs: 0, ve: payload.axis_length, axisLength: payload.axis_length };
+    if (!exonAlignStates[instance] || exonAlignStates[instance].axisLength !== payload.axis_length) {
+      exonAlignStates[instance] = { vs: 0, ve: payload.axis_length, axisLength: payload.axis_length };
     }
-    const state = exonAlignState;
+    const state = exonAlignStates[instance];
 
     function redraw() {
       PT.renderExonAlignment(svgEl, payload, state);
-      PT.updateZoomRangeLabel("fasta-exon", state);
+      PT.updateZoomRangeLabel(idPrefix, state);
     }
     redraw();
     if (zoomEl) {
-      zoomEl.innerHTML = PT.zoomControlsHtml("fasta-exon");
-      PT.wireZoomButtons("fasta-exon", state, redraw);
+      zoomEl.innerHTML = PT.zoomControlsHtml(idPrefix);
+      PT.wireZoomButtons(idPrefix, state, redraw);
     }
     PT.attachPanZoom(svgEl, state, redraw, {});
+  });
+
+  // Toggles a button's disabled state -- used to grey out "Run analysis"
+  // in middle-down mode until at least one peptide candidate is checked, so
+  // a click can't run the analysis on nothing.
+  Shiny.addCustomMessageHandler("pt_set_button_enabled", function (msg) {
+    const btn = document.getElementById(msg.id);
+    if (btn) btn.disabled = !msg.enabled;
+  });
+
+  // Greys out/locks every element matched by msg.selector (used for the 3
+  // "Input selection" radio inputs, which share name="input_mode" rather
+  // than individually-targetable ids, hence a selector-based handler
+  // instead of pt_set_button_enabled's single-id one) -- also toggles a
+  // class on each input's enclosing <label> so the Bootstrap radio-inline
+  // text itself visibly greys out, not just the (small, easy-to-miss)
+  // radio circle.
+  Shiny.addCustomMessageHandler("pt_set_selector_enabled", function (msg) {
+    document.querySelectorAll(msg.selector).forEach(el => {
+      el.disabled = !msg.enabled;
+      const label = el.closest("label");
+      if (label) label.classList.toggle("pt-disabled-label", !msg.enabled);
+    });
+  });
+
+  // Clears rendered SVG/legend/filter/zoom content left over from a
+  // previous "Run analysis"/FASTA-alignment pass -- needed for the reset
+  // button: nulling the underlying reactive values on the server stops
+  // FUTURE renders, but content a script tag already injected into these
+  // elements stays in the DOM until something explicitly clears it.
+  // Handler MUST declare exactly one parameter (even though this message
+  // carries no real payload) -- Shiny 1.14's addCustomMessageHandler
+  // enforces handler.length === 1 and silently throws (aborting the rest
+  // of this script block, so THIS handler was simply never registered) for
+  // any handler with a different arity. Confirmed directly: the raw
+  // WebSocket frame for this message ({"custom":{"pt_reset_analysis":...}})
+  // WAS arriving correctly; only the zero-arg handler's registration failed.
+  Shiny.addCustomMessageHandler("pt_reset_analysis", function (msg) {
+    ["s1-ms1", "s1-ladder", "s2-ms1", "s2-ladder", "fasta-exon-align", "rmats-exon-align"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = "";
+    });
+    ["s1-legend", "s1-filters", "s1-zoom", "s2-legend", "s2-filters", "s2-zoom",
+     "fasta-exon-zoom", "fasta-exon-align-legend", "rmats-exon-zoom", "rmats-exon-align-legend"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = "";
+    });
+    ["s1-info", "s2-info"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "";
+    });
+    const tip = document.getElementById("pt-hover-tooltip");
+    if (tip) tip.style.display = "none";
   });
 }

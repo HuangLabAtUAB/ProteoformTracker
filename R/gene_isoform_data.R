@@ -118,3 +118,38 @@ build_proteoforms_for_transcripts <- function(transcript_ids) {
   names(pf_list) <- valid_ids
   pf_list
 }
+
+#' Collapse proteoforms that share an IDENTICAL sequence down to one
+#' representative each -- multiple Ensembl transcripts (e.g. splice variants
+#' differing only in UTRs) commonly translate to the exact same protein, but
+#' EACH still gets its own distinct protein accession (ENSP) from Ensembl;
+#' confirmed directly against the live REST API (RBMS1's ENST00000269305,
+#' ENST00000714359, and ENST00000905353 have three DIFFERENT ENSP ids --
+#' ENSP00000269305/519626/575412 -- despite an identical, byte-for-byte
+#' fetched protein sequence). So accession matching can't be used to spot
+#' these groups; comparing the actual fetched sequences is what finds them.
+#'
+#' @param pf_list named list of proteoform objects, id -> proteoform (order
+#'   determines representatives: the first id (in input order) in each
+#'   sequence group wins)
+#' @return list(
+#'   pf_list = deduplicated named list, representative ids only,
+#'   synonyms = named list, representative id -> character vector of every
+#'     original id (including itself) that shared its sequence
+#' )
+dedupe_proteoforms_by_sequence <- function(pf_list) {
+  if (length(pf_list) == 0) return(list(pf_list = pf_list, synonyms = list()))
+  ids <- names(pf_list)
+  seqs <- vapply(pf_list, function(p) p$sequence, character(1))
+  groups <- split(ids, seqs)
+  # split() orders groups by the sorted unique VALUES of `seqs`, not by
+  # first-seen position -- re-order so representative/output order matches
+  # the input list's order instead of alphabetical-by-sequence.
+  first_pos <- vapply(groups, function(g) min(match(g, ids)), integer(1))
+  groups <- groups[order(first_pos)]
+  rep_ids <- vapply(groups, function(g) g[1], character(1))
+  list(
+    pf_list = pf_list[rep_ids],
+    synonyms = setNames(groups, rep_ids)
+  )
+}
