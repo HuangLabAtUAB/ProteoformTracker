@@ -151,11 +151,12 @@ function(input, output, session) {
   output$fasta_results_ui <- renderUI(NULL)
   output$rmats_status <- renderText("")
   output$rmats_results_ui <- renderUI(NULL)
+  output$rmats_parse_status <- renderText("")
   for (nm in c("gene_status", "isoform_catalog_ui", "ptm_warnings_ui", "proteoform_table",
                "stale_notice", "viz_script", "confounder_status",
                "digestion_candidates_ui", "digestion_coverage_text", "digestion_summary_text",
                "digestion_per_parent_ui", "fasta_status", "fasta_results_ui",
-               "rmats_status", "rmats_results_ui")) {
+               "rmats_status", "rmats_results_ui", "rmats_parse_status")) {
     outputOptions(output, nm, suspendWhenHidden = FALSE)
   }
 
@@ -985,57 +986,215 @@ function(input, output, session) {
   # ============================================================
   rmats_event <- reactiveVal(NULL)
   rmats_matches <- reactiveVal(NULL)
-
-  # Same "there's a real file selected" gate as Option 2's content check --
-  # rMATS files are always uploaded (no paste option), and actual
-  # parseability is cheap enough to just check at click time (see the run
-  # handler below) rather than duplicating the parser here for gating.
+  # TRUE from the moment "Find matching transcripts" succeeds until Reset --
+  # while TRUE, the file input/event-type/event-picker are greyed out, so the
+  # user can't change any of them without the results panel below silently
+  # going stale relative to what's shown in those three inputs (previously
+  # they stayed live-editable the whole time, with nothing forcing a fresh
+  # "Find matching transcripts" click after a change).
+  rmats_locked <- reactiveVal(FALSE)
   observe({
+    locked <- rmats_locked()
+    session$sendCustomMessage("pt_set_button_enabled", list(id = "rmats_file", enabled = !locked))
+    session$sendCustomMessage("pt_set_button_enabled", list(id = "rmats_event_type", enabled = !locked))
+    session$sendCustomMessage("pt_set_button_enabled", list(id = "rmats_event_select", enabled = !locked))
+  })
+
+  # Parses the uploaded file as soon as a file + event type are both
+  # present -- reactively, not just at "Find matching transcripts" click
+  # time -- so the event-picker dropdown below can be populated right away
+  # and the user can see/select which of possibly many rows to analyze
+  # BEFORE running the (more expensive) transcript-matching step. Re-parses
+  # on every dependency change rather than caching, but parsing a rMATS
+  # text file is cheap relative to the matching step.
+  rmats_events <- reactive({
+    req(input$rmats_file, input$rmats_event_type %in% c("SE", "MXE"))
+    parser <- if (identical(input$rmats_event_type, "MXE")) parse_rmats_mxe else parse_rmats_se
+    tryCatch(parser(input$rmats_file$datapath), error = function(e) NULL)
+  })
+
+  output$rmats_parse_status <- renderText({
+    if (is.null(input$rmats_file)) return("")
+    events <- rmats_events()
+    event_type <- input$rmats_event_type
+    if (is.null(events) || nrow(events) == 0) {
+      sprintf("Could not parse this file as rMATS %s results -- check it's the %s.MATS.JC/JCEC output with its header row intact.", event_type, event_type)
+    } else {
+      sprintf("%d event(s) found in this file. Select one below, then \"Find matching transcripts\".", nrow(events))
+    }
+  })
+
+  # "Which round of event choices is currently on offer" -- bumped whenever
+  # the event list is (re)populated (new/changed file, event type, or
+  # Reset). Folded directly into the dropdown's OWN option values below
+  # (e.g. "3_1", not just "1") rather than tracked as a separate "did the
+  # user pick something for this round" flag: with plain "1"/"2"/... values,
+  # switching from one event list to an unrelated one and picking the SAME
+  # ROW POSITION (e.g. row 1 of a brand new file, right after row 1 of the
+  # previous one) is, from the WIDGET's own point of view, no change at all
+  # -- confirmed directly that this genuinely never fires a change event
+  # (the underlying selectize value stays "1" throughout, so nothing is
+  # ever sent to the server), which left the button silently stuck
+  # reflecting a stale pick from an entirely different event list.
+  # Generation-tagging the values guarantees the string itself is always
+  # different across rounds, so re-picking "row 1" always is a real change.
+  rmats_events_generation <- reactiveVal(0)
+
+  observe({
+    events <- rmats_events()
+    event_type <- input$rmats_event_type
+    gen <- isolate(rmats_events_generation()) + 1
+    isolate(rmats_events_generation(gen))
+    if (is.null(events) || nrow(events) == 0) {
+      updateSelectInput(session, "rmats_event_select", choices = c("-- select an event --" = ""), selected = "")
+    } else {
+      labels <- vapply(seq_len(nrow(events)), function(i) {
+        e <- events[i, ]
+        sprintf("%d: %s, %s (IncLevelDifference=%s)", i, e$gene_symbol,
+                rmats_event_region_text(e, event_type),
+                if (is.na(e$inc_level_difference)) "NA" else sprintf("%.3f", e$inc_level_difference))
+      }, character(1))
+      # Blank placeholder is the actual default (deliberately NOT the first
+      # real event) -- Shiny's selectInput otherwise auto-selects the first
+      # choice the instant this populates, which would silently satisfy
+      # "an event is selected" without the user ever having chosen one,
+      # defeating the point of gating "Find matching transcripts" on a real
+      # choice for a file with more than one event.
+      choices <- c("-- select an event --" = "", setNames(paste0(gen, "_", seq_len(nrow(events))), labels))
+      updateSelectInput(session, "rmats_event_select", choices = choices, selected = "")
+    }
+  })
+
+  # "Find matching transcripts" additionally requires an event to actually
+  # be picked from the dropdown FOR THE CURRENT event list -- there's no
+  # sensible default row to fall back to once a file can contain many
+  # events, unlike a single-event file where "just use row 1" used to be a
+  # reasonable (if silent) default. Checking the generation PREFIX (rather
+  # than a separately-tracked "picked" flag) is robust even if the widget's
+  # own clear-to-placeholder state never echoes back to the server: a
+  # stale value from an earlier round simply won't match the CURRENT
+  # generation's prefix, regardless of what the client did or didn't send.
+  observe({
+    gen <- rmats_events_generation()
+    picked_this_round <- !is.null(input$rmats_event_select) && nzchar(input$rmats_event_select) &&
+      identical(sub("^([0-9]+)_.*$", "\\1", input$rmats_event_select), as.character(gen))
     session$sendCustomMessage("pt_set_button_enabled", list(
       id = "btn_run_rmats",
       enabled = !is.null(input$rmats_file) && input$rmats_event_type %in% c("SE", "MXE") &&
-        ms_strategy_set() && ms_resolution_set()
+        picked_this_round && ms_strategy_set() && ms_resolution_set()
     ))
   })
 
   observeEvent(input$btn_run_rmats, {
     event_type <- input$rmats_event_type
-    req(input$rmats_file, event_type %in% c("SE", "MXE"))
-    parser <- if (identical(event_type, "MXE")) parse_rmats_mxe else parse_rmats_se
+    gen <- rmats_events_generation()
+    sel <- input$rmats_event_select
+    req(input$rmats_file, event_type %in% c("SE", "MXE"), sel, nzchar(sel),
+        identical(sub("^([0-9]+)_.*$", "\\1", sel), as.character(gen)))
     matcher <- if (identical(event_type, "MXE")) match_rmats_mxe_transcripts else match_rmats_se_transcripts
-    events <- tryCatch(parser(input$rmats_file$datapath), error = function(e) NULL)
-    if (is.null(events) || nrow(events) == 0) {
-      output$rmats_status <- renderText(sprintf(
-        "Could not parse this file as rMATS %s results -- check it's the %s.MATS.JC/JCEC output with its header row intact.", event_type, event_type
-      ))
-      rmats_event(NULL)
-      rmats_matches(NULL)
-      return()
-    }
-    event <- events[1, ]
+    events <- rmats_events()
+    req(events, nrow(events) > 0)
+    row_i <- as.integer(sub("^[0-9]+_", "", sel))
+    event <- events[row_i, ]
     rmats_event(event)
     matches <- matcher(event, reference_exon_index)
     rmats_matches(matches)
+    rmats_locked(TRUE)
 
     arm_counts_text <- paste(vapply(matches$arms, function(a) sprintf("%d match the %s", nrow(a$candidates), a$label), character(1)), collapse = "; ")
-    multi_note <- if (nrow(events) > 1) sprintf(" (file has %d events; only the first is used per run for now)", nrow(events)) else ""
     output$rmats_status <- renderText(sprintf(
-      "%s %s event, %s (%s strand)%s: %s. Pick which to include below, then Add to comparison.",
-      event$gene_symbol, event_type, rmats_event_region_text(event, event_type), event$strand, multi_note, arm_counts_text
+      "%s %s event, %s (%s strand): %s. Pick which to include below, then Add to comparison.",
+      event$gene_symbol, event_type, rmats_event_region_text(event, event_type), event$strand, arm_counts_text
     ))
+    # Alignment rendering itself (real matches' full exon structure + each
+    # arm's constructed backbone isoform) happens in the observe() below,
+    # keyed off rmats_matches() and the backbone dropdowns -- so it reruns
+    # both right now (matches() just changed) and again whenever the user
+    # picks a different backbone transcript, without duplicating this logic.
+  })
 
-    all_ids <- unique(unlist(lapply(matches$arms, function(a) a$candidates$transcript_id)))
-    if (length(all_ids) > 0) {
-      preview <- build_rmats_candidate_alignment(matches, reference_exon_index)
-      session$sendCustomMessage("pt_render_exon_alignment", list(
-        has_data = !is.null(preview), payload = preview, instance = "rmats",
-        svg_id = "rmats-exon-align", legend_id = "rmats-exon-align-legend",
-        zoom_id = "rmats-exon-zoom", id_prefix = "rmats-exon"
-      ))
-    } else {
-      session$sendCustomMessage("pt_render_exon_alignment", list(has_data = FALSE, instance = "rmats",
-        svg_id = "rmats-exon-align", legend_id = "rmats-exon-align-legend", zoom_id = "rmats-exon-zoom"))
-    }
+  # Translates each arm's CONSTRUCTED isoform (build_rmats_arm_isoform()'s
+  # exon/CDS splice) all the way to a real protein sequence, via
+  # translate_rmats_constructed_isoform() -- genome-FASTA DNA extraction +
+  # standard-genetic-code translation, verified directly against known
+  # transcripts' real Ensembl protein sequences (byte-for-byte identical on
+  # both + and - strand test cases). This is what lets a constructed isoform
+  # be offered as a selectable "Add to comparison" candidate, not just shown
+  # in the exon-alignment visualization -- the user's own point: "even if
+  # later they are merged to other transcripts due to identical protein
+  # sequence/mass" (handled downstream by the existing
+  # dedupe_proteoforms_by_sequence() step, unchanged here).
+  #
+  # Reruns whenever matches() changes OR the user picks a different backbone
+  # transcript for either arm -- same dependencies as the alignment-building
+  # observe() below, kept as a separate reactive (rather than folded into
+  # that observe()) so output$rmats_results_ui can read its aa_len/mass
+  # numbers without needing to run the (separate, visualization-only)
+  # build_rmats_full_alignment() call.
+  #
+  # @return named list, arm key -> list(transcript_id, backbone, arm_label,
+  #   protein_sequence, exon_table) -- an arm is simply absent if its
+  #   backbone's exon structure couldn't be fetched or translation failed
+  #   (e.g. a frame mismatch between the backbone's own CDS annotation and
+  #   rMATS' local exon boundaries)
+  rmats_constructed <- reactive({
+    matches <- rmats_matches()
+    event <- rmats_event()
+    if (is.null(matches) || is.null(event)) return(list())
+    arm_keys <- names(matches$arms)
+    result <- list()
+    withProgress(message = "Translating constructed isoform(s)...", value = 0.3, {
+      for (i in seq_along(arm_keys)) {
+        k <- arm_keys[i]
+        backbone <- input[[paste0("rmats_backbone_arm", i)]]
+        if (is.null(backbone) || !nzchar(backbone)) backbone <- default_backbone_for_arm(matches, k)
+        if (is.na(backbone)) next
+        synth <- build_rmats_arm_isoform(backbone, matches$flanks, matches$cassette[[k]], reference_exon_index)
+        if (is.null(synth)) next
+        tid <- sprintf("CONSTRUCTED_%s_%s", k, backbone)
+        translated <- translate_rmats_constructed_isoform(synth, tid, event$gene_symbol)
+        if (is.null(translated)) next
+        result[[k]] <- list(transcript_id = tid, backbone = backbone, arm_label = matches$arms[[k]]$label,
+                             protein_sequence = translated$protein_sequence, exon_table = translated$exon_table)
+      }
+    })
+    result
+  })
+
+  # Protein length (AA count) + average intact mass for every candidate
+  # currently on offer -- both REAL matched transcripts (any arm) and each
+  # arm's CONSTRUCTED isoform -- so the "Matching transcripts" list can show
+  # both, helping the user judge which candidate(s) to select for downstream
+  # MS1/MS2 analysis without having to add each one to the comparison first
+  # just to see its mass. All sequences are batched into a SINGLE
+  # sequence_masses_batch() Python round-trip rather than one call per
+  # candidate.
+  #
+  # @return named list, transcript_id (real ENST id or a constructed id from
+  #   rmats_constructed()) -> list(aa_len, mass_kda)
+  rmats_candidate_meta <- reactive({
+    matches <- rmats_matches()
+    if (is.null(matches)) return(list())
+    real_ids <- unique(unlist(lapply(matches$arms, function(a) a$candidates$transcript_id)))
+    real_seqs <- if (length(real_ids) > 0) {
+      withProgress(message = "Fetching candidate protein sequences...", value = 0.3, {
+        fetch_transcript_proteins(real_ids)
+      })
+    } else list()
+    real_seqs <- real_seqs[!vapply(real_seqs, is.na, logical(1))]
+
+    constructed <- rmats_constructed()
+    constructed_seqs <- setNames(
+      lapply(constructed, function(c) c$protein_sequence),
+      vapply(constructed, function(c) c$transcript_id, character(1))
+    )
+
+    all_seqs <- c(real_seqs, constructed_seqs)
+    if (length(all_seqs) == 0) return(list())
+    masses <- sequence_masses_batch(unname(unlist(all_seqs)), average = TRUE)
+    setNames(lapply(seq_along(all_seqs), function(i) {
+      list(aa_len = nchar(all_seqs[[i]]), mass_kda = masses[i] / 1000)
+    }), names(all_seqs))
   })
 
   output$rmats_results_ui <- renderUI({
@@ -1043,62 +1202,190 @@ function(input, output, session) {
     event <- rmats_event()
     if (is.null(event) || is.null(matches)) return(NULL)
 
+    meta <- rmats_candidate_meta()
+    constructed <- rmats_constructed()
+    meta_text <- function(tid) {
+      m <- meta[[tid]]
+      if (is.null(m)) return("")
+      sprintf("%d aa, %.1f kDa", m$aa_len, m$mass_kda)
+    }
+
     # Pre-check the single best-matching pair (highest pairing_score) per
     # arm as a sensible default rather than an arbitrary one -- see
     # match_rmats_arm_transcripts()'s doc comment for why pairing_score
     # (exon-set similarity against candidates in OTHER arms) is the right
     # criterion: it favors the pair that most likely represents "the same
     # underlying transcript, +/- this event" over transcripts that only
-    # coincidentally match locally.
-    default_checked <- unlist(lapply(matches$arms, function(a) {
-      if (nrow(a$candidates) > 0) a$candidates$transcript_id[1] else NULL
+    # coincidentally match locally. An arm with NO real candidate at all
+    # pre-checks its CONSTRUCTED isoform instead, so "Add to comparison"
+    # always has something checked for every arm rather than silently
+    # offering nothing to select for that arm.
+    default_checked <- unlist(lapply(names(matches$arms), function(k) {
+      a <- matches$arms[[k]]
+      if (nrow(a$candidates) > 0) return(a$candidates$transcript_id[1])
+      if (!is.null(constructed[[k]])) return(constructed[[k]]$transcript_id)
+      NULL
     }))
 
-    row_for <- function(tid, is_canonical, pairing_score, arm_label) {
+    row_for <- function(tid, is_canonical, pairing_score, anchor, arm_label) {
       prev_checked <- isolate(input[[paste0("rmats_chk_", tid)]])
       checked <- if (!is.null(prev_checked)) prev_checked else (tid %in% default_checked)
+      # Flags candidates matched via only ONE flank (rMATS' reported
+      # coordinates didn't exactly match the annotation on the OTHER side --
+      # see match_rmats_arm_transcripts()'s doc comment) so a partial-
+      # confidence match doesn't read as identical in strength to a full
+      # both-flanks match.
+      anchor_note <- rmats_anchor_note(anchor, event$strand)
       tags$div(class = "pt-isorow",
         checkboxInput(paste0("rmats_chk_", tid), NULL, value = checked),
         tags$span(class = "pt-id", tid),
         tags$span(class = "pt-meta", if (is_canonical) "canonical" else ""),
         tags$span(class = "pt-meta", sprintf("pairing score %.2f", pairing_score)),
+        tags$span(class = "pt-meta", meta_text(tid)),
+        if (nzchar(anchor_note)) tags$span(class = "pt-warn", style = "font-size:11px;", anchor_note),
         tags$span(class = "pt-note", sprintf("(%s)", arm_label))
       )
     }
-    arm_blocks <- lapply(matches$arms, function(a) {
+    constructed_row_for <- function(k, a) {
+      c_info <- constructed[[k]]
+      if (is.null(c_info)) return(NULL)
+      tid <- c_info$transcript_id
+      prev_checked <- isolate(input[[paste0("rmats_chk_", tid)]])
+      checked <- if (!is.null(prev_checked)) prev_checked else (tid %in% default_checked)
+      tags$div(class = "pt-isorow",
+        checkboxInput(paste0("rmats_chk_", tid), NULL, value = checked),
+        tags$span(class = "pt-id", tid),
+        tags$span(class = "pt-meta", "constructed"),
+        tags$span(class = "pt-meta", meta_text(tid)),
+        tags$span(class = "pt-note", sprintf("(%s, backbone %s)", a$label, c_info$backbone))
+      )
+    }
+    arm_blocks <- lapply(names(matches$arms), function(k) {
+      a <- matches$arms[[k]]
       rows <- if (nrow(a$candidates) > 0) {
         lapply(seq_len(nrow(a$candidates)), function(i) {
-          row_for(a$candidates$transcript_id[i], a$candidates$is_canonical[i], a$candidates$pairing_score[i], a$label)
+          row_for(a$candidates$transcript_id[i], a$candidates$is_canonical[i], a$candidates$pairing_score[i],
+                  a$candidates$anchor[i], a$label)
         })
       } else list()
+      c_row <- constructed_row_for(k, a)
       tagList(
         h6(a$label),
-        if (length(rows) > 0) tags$div(rows) else tags$p(class = "pt-note", sprintf("No annotated transcript matches the %s.", tolower(a$label)))
+        if (length(rows) > 0) tags$div(rows) else tags$p(class = "pt-note", sprintf("No annotated transcript matches the %s.", tolower(a$label))),
+        if (!is.null(c_row)) tags$div(c_row)
       )
     })
-    total_candidates <- sum(vapply(matches$arms, function(a) nrow(a$candidates), integer(1)))
+    total_candidates <- sum(vapply(matches$arms, function(a) nrow(a$candidates), integer(1))) + length(constructed)
+
+    # One "backbone transcript" dropdown per arm -- everything OUTSIDE the
+    # local AS region in that arm's CONSTRUCTED isoform track comes from
+    # here (see build_rmats_arm_isoform()'s doc comment for why rMATS'
+    # own reported exons alone aren't enough to build a whole isoform).
+    # Fixed ids (rmats_backbone_arm1/2, positional -- there are always
+    # exactly 2 arms) rather than per-arm-key ids, so the alignment-
+    # rendering observe() below can watch a known, fixed set of inputs
+    # instead of needing dynamic observer registration.
+    arm_keys <- names(matches$arms)
+    choices <- matches$gene_transcript_ids
+    backbone_selects <- lapply(seq_along(arm_keys), function(i) {
+      k <- arm_keys[i]
+      a <- matches$arms[[k]]
+      default_bb <- default_backbone_for_arm(matches, k)
+      if (length(choices) == 0) return(NULL)
+      # This whole renderUI() reruns (recreating every widget from scratch,
+      # including this selectInput) not just after "Find matching
+      # transcripts" but also on EVERY backbone pick -- rmats_constructed()/
+      # rmats_candidate_meta() (read below, for the constructed-isoform rows
+      # and their aa/mass) both depend on input$rmats_backbone_arm<i> itself.
+      # Without reading the PRIOR value back via isolate() here, the
+      # recreated selectInput would always fall back to selected=default_bb,
+      # silently reverting the user's own pick the instant they made it --
+      # reproduced directly: picking any backbone other than the default
+      # appeared to do nothing, every re-render snapped it right back.
+      # Same isolate()-preserves-prior-value pattern already used for the
+      # candidate checkboxes' `checked` state just below.
+      prev_bb <- isolate(input[[paste0("rmats_backbone_arm", i)]])
+      selected_bb <- if (!is.null(prev_bb) && nzchar(prev_bb) && prev_bb %in% choices) prev_bb else default_bb
+      labels <- ifelse(!is.na(matches$canonical_transcript_id) & choices == matches$canonical_transcript_id,
+                        paste0(choices, " (canonical)"), choices)
+      selectInput(paste0("rmats_backbone_arm", i),
+                  sprintf("Backbone transcript for \"%s\" (constructed isoform)", a$label),
+                  choices = setNames(choices, labels), selected = selected_bb, width = "420px")
+    })
 
     tagList(
       hr(),
       h5("1. Matching transcripts"),
-      p(class = "pt-note", "Pairing score = how much of each transcript's exon structure (outside this event) agrees with its best match in another arm -- close to 1 means \"the same underlying transcript, using this arm's exon(s) vs. another's\"; the best-scoring pair is pre-checked below."),
+      p(class = "pt-note", "Pairing score = how much of each transcript's exon structure (outside this event) agrees with its best match in another arm -- close to 1 means \"the same underlying transcript, using this arm's exon(s) vs. another's\"; the best-scoring pair is pre-checked below. A transcript only needs ONE of the two flanking exons rMATS reported to match exactly and sit right next to this arm's exon(s) -- rMATS' own boundaries don't always exactly match the annotation on both sides, so candidates matched via just one flank are marked \"upstream/downstream-flank match only\" rather than being silently excluded. Each arm also lists its own \"constructed\" isoform (see section 2 below) as a selectable candidate, in case no real annotated transcript is a clean match. A highlight box on a track in the alignment below doesn't necessarily mean that transcript counts as a match here -- it only means that track's real, full annotation contains that exact rMATS-reported exon somewhere; that can happen on a transcript listed under a DIFFERENT arm (e.g. a transcript that genuinely contains both mutually-exclusive exons back-to-back), which isn't the same as being flank-adjacent evidence for THIS arm."),
       arm_blocks,
       hr(),
       h5("2. Exon structure alignment"),
-      p(class = "pt-note", "Every matched transcript shown for context, regardless of which are checked above; the event's own differential exon(s) are boxed on top of the usual common/partial/unique coloring. Scroll/pinch or use the +/- buttons to zoom, drag to pan. (Rendered below, outside this dynamic panel.)"),
+      p(class = "pt-note", "Real matched transcripts show their full exon structure (including UTRs), and every one of rMATS' own reported exons -- both mutually-exclusive/differential exon(s) AND the upstream/downstream flanks -- are boxed on top of the usual common/partial/unique coloring. Since rMATS itself only reports those local exons, each arm ALSO gets a \"Constructed\" isoform track: the backbone transcript picked below, with everything outside the local region taken from that backbone and the local region itself replaced by rMATS' own reported exons. Pick a different backbone per arm below if the default doesn't reflect what you want. Scroll/pinch or use the +/- buttons to zoom, drag to pan. (Rendered below, outside this dynamic panel.)"),
+      backbone_selects,
       hr(),
       if (total_candidates > 0) actionButton("btn_rmats_add_to_comparison", "Add to comparison", class = "btn-success")
     )
   })
 
+  # Builds and (re)sends the exon-alignment preview -- real matched
+  # transcripts' full exon structure (fetched live so UTRs render, unlike
+  # reference_exon_index's CDS-only rows) plus each arm's constructed
+  # backbone isoform. Reruns both right after "Find matching transcripts"
+  # (rmats_matches() just changed) and whenever the user picks a different
+  # backbone transcript for either arm.
+  observe({
+    matches <- rmats_matches()
+    if (is.null(matches)) return()
+    arm_keys <- names(matches$arms)
+    backbone_choices <- list()
+    for (i in seq_along(arm_keys)) {
+      val <- input[[paste0("rmats_backbone_arm", i)]]
+      if (!is.null(val) && nzchar(val)) backbone_choices[[arm_keys[i]]] <- val
+    }
+    preview <- withProgress(message = "Building exon alignment (fetching full exon structures)...", value = 0.3, {
+      build_rmats_full_alignment(matches, reference_exon_index, backbone_choices)
+    })
+    if (!is.null(preview)) {
+      session$sendCustomMessage("pt_render_exon_alignment", list(
+        has_data = TRUE, payload = preview, instance = "rmats", force_reset_zoom = TRUE,
+        svg_id = "rmats-exon-align", legend_id = "rmats-exon-align-legend",
+        zoom_id = "rmats-exon-zoom", id_prefix = "rmats-exon"
+      ))
+    } else {
+      session$sendCustomMessage("pt_render_exon_alignment", list(has_data = FALSE, instance = "rmats", force_reset_zoom = TRUE,
+        svg_id = "rmats-exon-align", legend_id = "rmats-exon-align-legend", zoom_id = "rmats-exon-zoom"))
+    }
+  })
+
   observeEvent(input$btn_rmats_add_to_comparison, {
     matches <- rmats_matches()
     req(matches)
-    all_ids <- unique(unlist(lapply(matches$arms, function(a) a$candidates$transcript_id)))
+    real_ids <- unique(unlist(lapply(matches$arms, function(a) a$candidates$transcript_id)))
+    # Constructed isoforms are selectable candidates too (not just shown in
+    # the visualization) -- see rmats_constructed()'s doc comment. Keyed by
+    # transcript_id here (rmats_constructed() itself is keyed by arm) since
+    # that's what the checkbox ids (and all_ids/checked_ids below) use.
+    constructed <- rmats_constructed()
+    constructed_by_id <- setNames(constructed, vapply(constructed, function(c) c$transcript_id, character(1)))
+    constructed_ids <- names(constructed_by_id)
+
+    all_ids <- c(real_ids, constructed_ids)
     checked_ids <- Filter(function(tid) isTRUE(input[[paste0("rmats_chk_", tid)]]), all_ids)
     req(length(checked_ids) > 0)
 
-    selected_pf_raw <- build_proteoforms_for_transcripts(checked_ids)
+    checked_real_ids <- intersect(checked_ids, real_ids)
+    checked_constructed_ids <- intersect(checked_ids, constructed_ids)
+    real_pf_raw <- build_proteoforms_for_transcripts(checked_real_ids)
+    constructed_pf_raw <- setNames(lapply(constructed_by_id[checked_constructed_ids], function(c) {
+      proteoform(id = c$transcript_id, sequence = c$protein_sequence, provenance = "module3_rmats_event")
+    }), checked_constructed_ids)
+    # Real ids listed first: if a constructed isoform's sequence turns out
+    # identical to a real one (the whole point of offering both -- "even if
+    # later they are merged to other transcripts due to identical protein
+    # sequence/mass"), dedupe_proteoforms_by_sequence()'s first-seen-wins
+    # tie-break picks the real, Ensembl-recognizable id as the representative
+    # rather than the synthetic "CONSTRUCTED_..." label.
+    selected_pf_raw <- c(real_pf_raw, constructed_pf_raw)
     req(length(selected_pf_raw) > 0)
     # Multiple checked transcripts commonly translate to the IDENTICAL
     # protein (same reasoning as Option 1's own isoform catalog -- see
@@ -1112,7 +1399,19 @@ function(input, output, session) {
 
     event <- rmats_event()
     event_type <- input$rmats_event_type
-    exon_table <- reference_exon_index[reference_exon_index$transcript_id %in% names(deduped$pf_list), ]
+    # Real transcripts' rows come straight from reference_exon_index as
+    # before; any surviving CONSTRUCTED representative needs its own
+    # synthetic exon table (built by translate_rmats_constructed_isoform(),
+    # same column schema) row-bound in, since reference_exon_index has no
+    # rows at all for a made-up id.
+    kept_ids <- names(deduped$pf_list)
+    real_exon_table <- reference_exon_index[reference_exon_index$transcript_id %in% intersect(kept_ids, real_ids), ]
+    kept_constructed_ids <- intersect(kept_ids, constructed_ids)
+    exon_table <- if (length(kept_constructed_ids) > 0) {
+      do.call(rbind, c(list(real_exon_table), lapply(constructed_by_id[kept_constructed_ids], function(c) c$exon_table)))
+    } else {
+      real_exon_table
+    }
     protein_lengths <- vapply(deduped$pf_list, function(p) nchar(p$sequence), integer(1))
 
     catalog(list(gene = event$gene_symbol, exon_table = exon_table,
@@ -1177,7 +1476,15 @@ function(input, output, session) {
     # Module 3 (rMATS)
     rmats_event(NULL)
     rmats_matches(NULL)
+    rmats_locked(FALSE)
     output$rmats_status <- renderText("")
+    updateSelectInput(session, "rmats_event_select", choices = c("-- select an event --" = ""), selected = "")
+    # Bumping the generation (not just clearing choices/selected) is what
+    # actually re-gates "Find matching transcripts" here -- see
+    # rmats_events_generation's own doc comment for why the dropdown's
+    # clear-to-placeholder state can't be relied on to echo back to the
+    # server on its own.
+    rmats_events_generation(isolate(rmats_events_generation()) + 1)
 
     # Raw SVG/legend/filter/zoom DOM content a PREVIOUS script-injected
     # render left behind -- clearing the render functions above stops

@@ -14,7 +14,7 @@ window.PT = (function () {
   // differential exon(s)) -- drawn as a dashed outline ON TOP of a block's
   // normal common/partial/unique tier fill, cycling if there's more than
   // one highlight (MXE has two: its 1st and 2nd mutually exclusive exons).
-  const HIGHLIGHT_COLORS = ["#111111", "#0b5fff", "#c0392b"];
+  const HIGHLIGHT_COLORS = ["#111111", "#0b5fff", "#c0392b", "#0ca35c"];
   const FILTER_LABELS = ["All fragments", "Elevated (score>1)", "High (score>=4)", "Very high (score>=9)"];
 
   function passesFilter(score, level) {
@@ -443,6 +443,13 @@ window.PT = (function () {
     // already flipped onto this convention before reaching this payload).
     let els = `<text x="${PX0}" y="10" font-size="10" font-weight="600" fill="#333" text-anchor="middle">5'</text>` +
       `<text x="${PX1}" y="10" font-size="10" font-weight="600" fill="#333" text-anchor="middle">3'</text>`;
+    // Tracks which highlights actually landed on a real block below (drawn
+    // as a box on top of that block) -- an event arm can have ZERO
+    // matching transcripts (e.g. one of MXE's two mutually exclusive
+    // exons), in which case NO track ever has a block at that exact
+    // position, so its box could never be drawn there. Those get a
+    // fallback marker afterwards instead of silently going unhighlighted.
+    const highlightMatched = (payload.highlights || []).map(() => false);
     payload.tracks.forEach((t, ti) => {
       const top = topPad + ti * rowH;
       const color = rowColors[ti % rowColors.length];
@@ -482,8 +489,24 @@ window.PT = (function () {
           if (Math.abs(b.start - hl.start) > 0.5 || Math.abs(b.end - hl.end) > 0.5) return;
           const hcolor = HIGHLIGHT_COLORS[hi % HIGHLIGHT_COLORS.length];
           els += `<rect x="${x0.toFixed(1)}" y="${top + 10}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="12" fill="none" stroke="${hcolor}" stroke-width="2" stroke-dasharray="3,2" rx="1.5"/>`;
+          highlightMatched[hi] = true;
         });
       });
+    });
+
+    // Fallback for any highlight that never landed on a real block above
+    // (its arm had zero matching transcripts, so no track has an exon
+    // there) -- a full-height dashed vertical band plus a small label, so
+    // the event's differential exon(s) are always shown somewhere even
+    // when no candidate transcript actually contains them.
+    (payload.highlights || []).forEach((hl, hi) => {
+      if (highlightMatched[hi]) return;
+      const hcolor = HIGHLIGHT_COLORS[hi % HIGHLIGHT_COLORS.length];
+      const x0 = Math.max(xs(hl.start), PX0), x1 = Math.min(xs(hl.end), PX1);
+      if (x1 < PX0 || x0 > PX1) return;
+      const cx0 = Math.max(x0, PX0), cx1 = Math.min(Math.max(x1, x0 + 1), PX1);
+      els += `<rect x="${cx0.toFixed(1)}" y="${(topPad - 4).toFixed(1)}" width="${Math.max(1, cx1 - cx0).toFixed(1)}" height="${(height - topPad + 4).toFixed(1)}" fill="none" stroke="${hcolor}" stroke-width="2" stroke-dasharray="3,2"/>`;
+      els += `<text x="${((cx0 + cx1) / 2).toFixed(1)}" y="${(topPad - 8).toFixed(1)}" font-size="8" fill="${hcolor}" text-anchor="middle">${hl.label || "differential exon"} (no matching transcript)</text>`;
     });
 
     els += `<text x="${PX0}" y="${height - 4}" font-size="9" fill="#888">${payload.seqname}, ${payload.strand} strand -- exon widths shown to scale relative to each other; introns shown as connecting lines, not to scale</text>`;
@@ -545,7 +568,16 @@ if (window.Shiny) {
     if (legendEl) legendEl.innerHTML = payload ? PT.exonAlignmentLegendHtml(payload.highlights) : "";
     if (!payload) { PT.renderExonAlignment(svgEl, null); if (zoomEl) zoomEl.innerHTML = ""; exonAlignStates[instance] = null; return; }
 
-    if (!exonAlignStates[instance] || exonAlignStates[instance].axisLength !== payload.axis_length) {
+    // msg.force_reset_zoom (set by Option 3's rMATS preview, not Option 2's)
+    // always snaps back to full view -- each "Find matching transcripts"
+    // click is a brand new gene/event, unlike Option 2 where the SAME
+    // sequence is being incrementally refined (isoform/ORF re-selection),
+    // so preserving zoom there is useful but here it isn't. Without this,
+    // a DIFFERENT rMATS run whose axis_length happens to coincide with a
+    // previous one (e.g. the same gene, a different event row) would keep
+    // showing whatever zoomed/panned sub-range was left over from before,
+    // reading as if most of the gene's exons had vanished.
+    if (!exonAlignStates[instance] || msg.force_reset_zoom || exonAlignStates[instance].axisLength !== payload.axis_length) {
       exonAlignStates[instance] = { vs: 0, ve: payload.axis_length, axisLength: payload.axis_length };
     }
     const state = exonAlignStates[instance];

@@ -189,6 +189,8 @@ fluidPage(
         column(4, selectInput("rmats_event_type", "Event type", choices = c("SE", "MXE"))),
         column(6, fileInput("rmats_file", "Choose rMATS SE/MXE results file", accept = c(".txt", ".JC.txt")))
       ),
+      textOutput("rmats_parse_status"),
+      selectInput("rmats_event_select", "Event to analyze", choices = character(0), width = "560px"),
       actionButton("btn_run_rmats", "Find matching transcripts", class = "btn-primary"),
       br(), br(),
       textOutput("rmats_status"),
