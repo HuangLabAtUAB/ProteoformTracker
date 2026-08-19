@@ -33,14 +33,22 @@ window.PT = (function () {
   // propensity.R vs R/fragmentation_propensity_rf.R) and must never share
   // thresholds. "glm": calibrated against real matched b/y ions from two
   // independent public top-down datasets, INCLUDING the proteoform-length
-  // multiplier, fold-enrichment ~3x/~4.5x/~5.9x at these three thresholds.
+  // multiplier, fold-enrichment ~2.7x/~4.5x at these two thresholds (Elevated
+  // lowered from the original 1.5 cutpoint -- at 1.5+, most realistic-length
+  // (300+ aa) proteoforms cleared ZERO bonds at ANY tier, since the length
+  // term alone can push every bond's score below 1.5; 1.2 recovers some
+  // signal for medium-length proteoforms without changing the model itself).
   // "rf": length-free ranking mode, RF-predicted probability (0-1), fold-
-  // enrichment ~2.5x/~3.5x/~6.5x (scripts/build_propensity_rf_model.R).
+  // enrichment ~2.5x/~3.5x (scripts/build_propensity_rf_model.R). A third
+  // "Very high" tier existed at both scales but was dropped -- confirmed
+  // directly (scripts/validate_propensity_stringency_result.rds) it almost
+  // never fires for realistic-length proteoforms in either mode, so it was
+  // mostly just an extra click that led to an empty ladder.
   const TIER_THRESHOLDS = {
-    glm: { elevated: 1.5, high: 4, veryHigh: 10, opNorm: [1, 9.5],
-           labels: ["All fragments", "Elevated (score>1.5)", "High (score>=4)", "Very high (score>=10)"] },
-    rf: { elevated: 0.08, high: 0.15, veryHigh: 0.30, opNorm: [0, 0.3],
-          labels: ["All fragments", "Elevated (score>0.08)", "High (score>=0.15)", "Very high (score>=0.30)"] }
+    glm: { elevated: 1.2, high: 4, opNorm: [1, 9.5],
+           labels: ["All fragments", "Elevated (score>1.2)", "High (score>=4)"] },
+    rf: { elevated: 0.08, high: 0.15, opNorm: [0, 0.3],
+          labels: ["All fragments", "Elevated (score>0.08)", "High (score>=0.15)"] }
   };
   function tierThresholds(mode) { return TIER_THRESHOLDS[mode] || TIER_THRESHOLDS.glm; }
   // isotope-panel computation gate for RF mode -- mirrors R's
@@ -52,8 +60,7 @@ window.PT = (function () {
     const t = tierThresholds(mode);
     if (level === 0) return true;
     if (level === 1) return score > t.elevated;
-    if (level === 2) return score >= t.high;
-    return score >= t.veryHigh;
+    return score >= t.high;
   }
   function xScale(pos, vs, ve) { return PX0 + (pos - vs) / (ve - vs) * (PX1 - PX0); }
   function posFromPx(px, vs, ve) { return vs + (px - PX0) / (PX1 - PX0) * (ve - vs); }
@@ -949,6 +956,12 @@ window.PT = (function () {
     const infoEl = document.getElementById("s2-info");
     if (!ms1El || !ladderEl) return;
     expandCollapsible("s2-collapse-body");
+    // The MS1/MS2 sub-panels start collapsed too (ui.R) -- only pop open
+    // once "Compare selected confounders" (or a later scoring-mode
+    // rescore, which also calls this) actually produces something to show,
+    // same reasoning as the outer s2-collapse-body above.
+    expandCollapsible("s2-ms1-collapse-body");
+    expandCollapsible("s2-ms2-collapse-body");
 
     const t = payload.target;
     const targetColor = "#1f8a70";
@@ -956,15 +969,35 @@ window.PT = (function () {
     payload.confounders.forEach((c, i) => entries.push({ label: c.id, color: CONFOUNDER_PALETTE[i % CONFOUNDER_PALETTE.length], mass: c.mass, env: c.env || [] }));
     wireMs1ChartOnce("s2-ms1", ms1El, ms1ZoomEl, entries, payload.r_ref, payload.mz_ref);
 
-    const proteoform = {
-      id: t.id, label: t.id, color: targetColor, mass: t.mass, len: t.len, sequence: t.sequence,
+    // Target + every confounder, each on its OWN residue axis (0..len) --
+    // unlike section 1's checked proteoforms (usually one gene, so they can
+    // share a real exon axis), a confounder is by definition an unrelated
+    // protein from a different gene, so there's no shared coordinate system
+    // to align them on. Same fallback section 1 itself uses when no exon
+    // table is available (build_section1_payload(), R/viz_json.R). The MS2
+    // ladder used to only draw the target's own row here even though the
+    // MS1 chart above already overlays every confounder -- this makes both
+    // charts show the same set of proteins.
+    const proteoforms = [{
+      id: t.id, label: "TARGET: " + t.id, color: targetColor, mass: t.mass, len: t.len, sequence: t.sequence,
       ptms: t.ptms.map(p => Object.assign({}, p, { axis_pos: p.pos })),
       exon_blocks: t.exon_blocks.map(b => ({ start: b.start, end: b.end })),
       b_mass: t.b_mass, y_mass: t.y_mass, propensity: t.propensity,
       axis_pos: t.b_mass.map((_, i) => i + 1),
       tier_b: t.tier_b, tier_y: t.tier_y, ms2_stats: t.ms2_stats
-    };
-    const state = { vs: 1, ve: t.len, filter: 0, axisLength: t.len, scoringMode: payload.scoring_mode || "glm" };
+    }];
+    payload.confounders.forEach((c, i) => {
+      if (!c.b_mass || !c.b_mass.length) return; // no ladder computed for this candidate (shouldn't normally happen)
+      proteoforms.push({
+        id: c.id, label: c.id, color: CONFOUNDER_PALETTE[i % CONFOUNDER_PALETTE.length], mass: c.mass,
+        len: c.len, sequence: c.sequence, ptms: [], exon_blocks: [],
+        b_mass: c.b_mass, y_mass: c.y_mass, propensity: c.propensity,
+        axis_pos: c.b_mass.map((_, j) => j + 1),
+        tier_b: c.tier_b, tier_y: c.tier_y, ms2_stats: c.ms2_stats
+      });
+    });
+    const axisLength = Math.max(...proteoforms.map(p => p.len || 1));
+    const state = { vs: 1, ve: axisLength, filter: 0, axisLength: axisLength, scoringMode: payload.scoring_mode || "glm" };
     legendEl.innerHTML = legendHtml(payload.confounders.length === 0) +
       `<div style="font-size:12px;color:#666;">Window: +/-${payload.window_da} Da at best charge state ${payload.best_charge_state}. ${payload.confounders.length} real confounder(s) found.</div>`;
     renderStatsStrip(document.getElementById("s2-stats-strip"), payload.ms1_stats, "Target's MS1 peaks");
@@ -972,14 +1005,14 @@ window.PT = (function () {
     if (zoomEl) zoomEl.innerHTML = zoomControlsHtml("s2");
 
     function redraw() {
-      const counts = renderLadderRows(ladderEl, [proteoform], state.axisLength, state);
+      const counts = renderLadderRows(ladderEl, proteoforms, state.axisLength, state);
       const cEl = document.getElementById("s2-fcount");
       if (cEl) cEl.textContent = counts.visibleCount + " of " + counts.totalCount + " bonds shown";
       updateZoomRangeLabel("s2", state);
     }
     redraw();
-    wireInteraction(ladderEl, state, [proteoform], redraw, infoEl);
-    wireFragmentClick("s2", ladderEl, [proteoform], payload.r_ref, payload.mz_ref, state);
+    wireInteraction(ladderEl, state, proteoforms, redraw, infoEl);
+    wireFragmentClick("s2", ladderEl, proteoforms, payload.r_ref, payload.mz_ref, state);
     if (zoomEl) wireZoomButtons("s2", state, redraw);
     function rewireFilterButtons() {
       tierThresholds(state.scoringMode).labels.forEach((_, i) => {
@@ -1455,6 +1488,22 @@ if (window.Shiny) {
   // any handler with a different arity. Confirmed directly: the raw
   // WebSocket frame for this message ({"custom":{"pt_reset_analysis":...}})
   // WAS arriving correctly; only the zero-arg handler's registration failed.
+  // Live re-render triggered by a scoring-mode switch (no "Run analysis"
+  // needed -- see server.R's observeEvent(input$scoring_mode, ...)):
+  // tier_b/tier_y/propensity/ms2_stats depend on scoring_mode, but MS1
+  // envelopes and exon/PTM/axis data don't, so the server reuses the last
+  // full payload and only patches the scoring-dependent fields before
+  // resending. A full PT.renderSection1/2() re-render (same call "Run
+  // analysis" itself uses) is simplest and correctly re-wires listeners via
+  // the existing abort-controller cleanup in wireInteraction/
+  // wireFragmentClick -- the one visible tradeoff is that zoom/pan/filter
+  // view resets to default on every switch, same as "Run analysis" already
+  // does.
+  Shiny.addCustomMessageHandler("pt_rescore_section", function (msg) {
+    if (msg.section === "s1") PT.renderSection1(msg.payload);
+    else if (msg.section === "s2") PT.renderSection2(msg.payload);
+  });
+
   Shiny.addCustomMessageHandler("pt_reset_analysis", function (msg) {
     // Tear down stale pan/zoom/click listeners FIRST -- otherwise a wheel
     // event arriving between the innerHTML clears below and this handler
@@ -1463,6 +1512,8 @@ if (window.Shiny) {
     PT.resetInteractions();
     PT.collapseSection("s1-collapse-body", "(run analysis to populate)");
     PT.collapseSection("s2-collapse-body", "(run analysis to populate)");
+    PT.collapseSection("s2-ms1-collapse-body", "");
+    PT.collapseSection("s2-ms2-collapse-body", "");
     ["s1-ms1", "s1-ladder", "s2-ms1", "s2-ladder", "s1-frag-ms1", "s2-frag-ms1",
      "fasta-exon-align", "rmats-exon-align"].forEach(id => {
       const el = document.getElementById(id);

@@ -59,6 +59,22 @@ ASPARTATE_ENHANCEMENT <- list(denatured = 1.4, native = 5.0)
 # intermediate plateau (still above the distance-1 floor) further in.
 TERMINAL_PROXIMITY_WEIGHTS <- c(1.0, 1.2, 2.5, 4.1, 4.2, 1.5)
 BASELINE_WEIGHT <- 1.0
+# Stringency-tier cutpoints for the calibrated (GLM) propensity score --
+# mirrored client-side in www/ptracker_viz.js's TIER_THRESHOLDS.glm (must
+# stay in sync; see RF_ELEVATED_THRESHOLD etc. in
+# R/fragmentation_propensity_rf.R for the length-free mode's own, numerically
+# unrelated cutpoints). Fold-enrichment for matched fragment ions over
+# baseline at these two thresholds: ~2.7x/~4.5x. Elevated lowered from an
+# original 1.5 cutpoint: confirmed directly (scripts/validate_propensity_
+# stringency_result.rds) that at 1.5+, any proteoform over ~300 residues has
+# its max score across the ENTIRE ladder fall below the threshold -- the
+# length term alone pushes everything under it, so realistic-length top-down
+# targets cleared zero bonds at every tier. 1.2 recovers partial signal for
+# short/medium proteoforms without changing the underlying model. A third
+# "Very high" tier (was 10, fold ~5.9x) was dropped for the same reason: it
+# almost never fired for realistic-length proteoforms either way.
+GLM_ELEVATED_THRESHOLD <- 1.2
+GLM_HIGH_THRESHOLD <- 4
 # local basic-residue ("mobile proton") density: fraction of K/R within a
 # +/-5-residue window centered on the bond. Counter to the classic
 # tryptic-peptide mobile-proton intuition (more nearby K/R -> more

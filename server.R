@@ -78,6 +78,13 @@ function(input, output, session) {
   # doc comment for why this can't just be inferred from confounder_ctx()
   # being non-NULL.
   confounder_comparison_ready <- reactiveVal(FALSE)
+  # Minimal context needed to cheaply RE-tier section 2 on a scoring-mode
+  # switch (see observeEvent(input$scoring_mode, ...) below) without redoing
+  # the isotope-envelope work confounder_comparison() already paid for --
+  # deliberately separate from confounder_ctx() above, which holds the
+  # SEARCH step's full (unfiltered) candidate list rather than whichever
+  # subset the user actually left checked.
+  confounder_comparison_ctx <- reactiveVal(NULL)
 
   # "Set" buttons for the two global settings panels (MS strategy, MS
   # resolution parameters): clicking Set greys the button out to show the
@@ -348,7 +355,7 @@ function(input, output, session) {
         tags$span(class = "pt-meta", sprintf("%d aa, %.1f Da", nchar(pf$sequence), mass)),
         tags$span(class = "pt-meta", sprintf("exons %s", compress_exon_ranges(exon_nums))),
         textInput(paste0("iso_ptm_", tid), NULL, value = ptm_default,
-                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation,215_S_Sulfo", width = "420px"),
+                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation; 215_S_Sulfo", width = "420px"),
         if (nzchar(synonym_note)) tags$span(class = "pt-note", style = "font-size:11px;", synonym_note)
       )
     })
@@ -705,7 +712,9 @@ function(input, output, session) {
       ms1_stats_1 <- list(total_peaks = total_peaks_1, crowded_peaks = n_crowded_1, clean_peaks = total_peaks_1 - n_crowded_1)
     }
 
-    payload1 <- build_section1_payload(pf_list, iso_key_of, masses, tiers, cat_result$exon_table, residue_offset = residue_offset, scoring_mode = scoring_mode, ms1_stats = ms1_stats_1)
+    gene_symbol_ctx <- isolate(input$gene_symbol)
+    gene_symbol_ctx <- if (!is.null(gene_symbol_ctx) && nzchar(gene_symbol_ctx)) gene_symbol_ctx else NA_character_
+    payload1 <- build_section1_payload(pf_list, iso_key_of, masses, tiers, cat_result$exon_table, residue_offset = residue_offset, scoring_mode = scoring_mode, ms1_stats = ms1_stats_1, gene_symbol = gene_symbol_ctx)
     # MS1 isotope patterns only -- MS2 fragment isotope peaks are NOT
     # precomputed here. Every checked proteoform's full fragment ladder can
     # have 100+ bonds clearing the "worth showing" propensity threshold, and
@@ -787,16 +796,16 @@ function(input, output, session) {
       )
 
       confounder_ctx(list(
-        target_pf = target_pf, target_mass = target_mass, conf_pfs = conf_pfs, candidates = cands,
+        target_pf = target_pf, target_id = target_id, target_mass = target_mass, conf_pfs = conf_pfs, candidates = cands,
         mz_collision_detail = confounder_result$mz_collision_detail,
         window_da = confounder_result$window_da, best_charge_state = confounder_result$best_charge_state,
-        target_exon_table = target_exon_table,
+        target_exon_table = target_exon_table, gene_symbol = gene_symbol_ctx,
         mode = mode, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, scoring_mode = scoring_mode
       ))
     }
 
     incProgress(0.05, detail = "Finishing up...")
-    analysis_ctx(list(pf_list = pf_list, mode = mode, r_ref = r_ref, mz_ref = mz_ref,
+    analysis_ctx(list(pf_list = pf_list, mode = mode, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin,
                        target_id = target_id, target_pf = target_pf_for_ctx))
 
     list(payload1 = payload1, target_id = target_id, candidates_summary = candidates_summary)
@@ -836,8 +845,15 @@ function(input, output, session) {
     }
 
     incProgress(0.15, detail = sprintf("Comparing fragment ladders for %d selected confounder(s)...", length(selected_conf_pfs)))
-    confounder_tiers <- compute_confounder_tiers(ctx$target_pf, selected_conf_pfs, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref,
-                                                  safety_margin = ctx$safety_margin, mode = ctx$mode, scoring_mode = ctx$scoring_mode)
+    # Gives every confounder its own tier_b/tier_y (not just the target's
+    # tiers against them), so the MS2 ladder can draw one row per confounder
+    # the same way the MS1 chart already draws one curve per confounder --
+    # see compute_confounder_tiers()'s doc comment (R/svg_render.R) for why
+    # this is deliberately NOT compute_ladder_tiers()'s full N-way algorithm:
+    # confirmed directly to take 1-3+ minutes at a 30-confounder candidate
+    # list with the N-way version (O(N^2) pairwise ladder comparisons).
+    combined_tiers <- compute_confounder_tiers(ctx$target_pf, ctx$target_id, selected_conf_pfs, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref,
+                                                safety_margin = ctx$safety_margin, mode = ctx$mode, scoring_mode = ctx$scoring_mode)
 
     n_sel <- max(1, length(selected_conf_pfs))
     confounder_envs <- list()
@@ -865,13 +881,19 @@ function(input, output, session) {
       candidates = selected_candidates, mz_collision_detail = ctx$mz_collision_detail,
       n_candidates_before_cap = length(all_ids)
     )
-    payload2 <- build_section2_payload(ctx$target_pf, ctx$target_mass, confounder_tiers, ctx$target_exon_table,
-                                        confounder_result_selected, confounder_envs, scoring_mode = ctx$scoring_mode, ms1_stats = ms1_stats_2)
+    payload2 <- build_section2_payload(ctx$target_pf, ctx$target_mass, combined_tiers, ctx$target_id, ctx$target_exon_table,
+                                        confounder_result_selected, confounder_envs, scoring_mode = ctx$scoring_mode, ms1_stats = ms1_stats_2,
+                                        gene_symbol = ctx$gene_symbol %||% NA_character_)
     incProgress(0.1, detail = "MS1 isotope pattern: target")
     target_ms1_peaks <- predict_ms1_peaks(ctx$target_pf, mode = ctx$mode, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref)
     payload2$target$env <- ms1_peaks_json(target_ms1_peaks)
     payload2$r_ref <- ctx$r_ref
     payload2$mz_ref <- ctx$mz_ref
+
+    confounder_comparison_ctx(list(
+      target_pf = ctx$target_pf, target_id = ctx$target_id, selected_conf_pfs = selected_conf_pfs,
+      r_ref = ctx$r_ref, mz_ref = ctx$mz_ref, safety_margin = ctx$safety_margin, mode = ctx$mode
+    ))
 
     list(payload2 = payload2, n_selected = length(selected_ids), n_total = length(all_ids))
    })
@@ -886,12 +908,21 @@ function(input, output, session) {
   # same bond still fire this (an "event"-priority input re-fires even when
   # its value is unchanged, unlike a normal reactive input).
   observeEvent(input$frag_ms1_request, {
-    ctx <- analysis_ctx()
-    req(ctx)
     reqs <- input$frag_ms1_request
     is_section2 <- identical(reqs$section, "s2")
+    # Section 2's ladder now draws the target AND every selected confounder
+    # (not just the target -- see the combined-tiers change in
+    # confounder_comparison() above), so a click needs to resolve by id
+    # against whichever of those it actually landed on, not assume "target"
+    # unconditionally like before that change.
+    ctx <- if (is_section2) confounder_comparison_ctx() else analysis_ctx()
+    req(ctx)
     entries <- lapply(reqs$requests, function(it) {
-      pf <- if (is_section2) ctx$target_pf else ctx$pf_list[[it$id]]
+      pf <- if (is_section2) {
+        if (identical(it$id, ctx$target_pf$id)) ctx$target_pf else ctx$selected_conf_pfs[[it$id]]
+      } else {
+        ctx$pf_list[[it$id]]
+      }
       if (is.null(pf)) return(NULL)
       n <- nchar(pf$sequence)
       if (!(it$ion %in% c("b", "y")) || it$p < 1 || it$p > n - 1) return(NULL)
@@ -996,7 +1027,7 @@ function(input, output, session) {
     rows <- lapply(seq_len(nrow(cands)), function(r) {
       cid <- cands$id[r]
       prev_checked <- isolate(input[[paste0("conf_chk_", sanitize_html_id(cid))]])
-      default_checked <- if (!is.null(prev_checked)) prev_checked else TRUE
+      default_checked <- if (!is.null(prev_checked)) prev_checked else FALSE
       shared <- if ("n_shared_ms2" %in% names(cands)) cands$n_shared_ms2[r] else NA
       shared_text <- if (is.na(shared)) "--" else sprintf("%d / %d", shared, total_ms2)
       gene <- if ("gene_symbol" %in% names(cands)) cands$gene_symbol[r] else NA
@@ -1012,7 +1043,7 @@ function(input, output, session) {
       )
     })
     tagList(
-      p(class = "pt-note", "Every one of these shares mass and/or m/z with the target -- deselect any you have outside evidence (e.g. RNA-seq expression) rules out, then compare only the rest. \"MS2 shared ions\" is a pairwise count (this candidate alone vs. the target, out of the target's own total b/y ion count) -- the multi-way unique/partial/common tiers shown after comparing are computed fresh from whichever candidates you leave checked, not from this number directly."),
+      p(class = "pt-note", "Every one of these shares mass and/or m/z with the target -- none are checked by default, so pick the ones worth a full comparison (or use outside evidence, e.g. RNA-seq expression, to guide which to include) before comparing. \"MS2 shared ions\" is a pairwise count (this candidate alone vs. the target, out of the target's own total b/y ion count) -- the multi-way unique/partial/common tiers shown after comparing are computed fresh from whichever candidates you leave checked, not from this number directly."),
       div(style = "margin-bottom:8px;",
         actionButton("btn_conf_select_all", "Select all", class = "btn-default btn-sm"),
         actionButton("btn_conf_select_none", "Select none", class = "btn-default btn-sm")
@@ -1056,6 +1087,139 @@ function(input, output, session) {
     j2 <- jsonlite::toJSON(cc$payload2, auto_unbox = TRUE, digits = 4, null = "null")
     tags$script(HTML(sprintf("PT.renderSection2(%s);", j2)))
   })
+
+  # Re-tier payload1/payload2 for an arbitrary scoring_mode without redoing
+  # the expensive MS1 envelope / confounder search work -- shared by the
+  # live-rescore observer below AND the "Download peak data" handlers
+  # further down, so a download always reflects whichever scoring mode is
+  # CURRENTLY on screen rather than whatever was active when "Run
+  # analysis"/"Compare selected confounders" last ran. Each returns NULL if
+  # there's nothing to re-tier yet (no analysis run / no context cached).
+  rescored_payload1 <- function(new_mode) {
+    if (!isTRUE(analysis_ready()) || is.null(catalog())) return(NULL)
+    actx <- analysis_ctx()
+    if (is.null(actx) || length(actx$pf_list) == 0) return(NULL)
+    tiers <- compute_ladder_tiers(actx$pf_list, r_ref = actx$r_ref, mz_ref = actx$mz_ref,
+                                   safety_margin = actx$safety_margin, mode = actx$mode, scoring_mode = new_mode)
+    payload1 <- analysis()$payload1
+    for (i in seq_along(payload1$proteoforms)) {
+      id <- payload1$proteoforms[[i]]$id
+      tt <- tiers[[id]]
+      if (is.null(tt)) next
+      payload1$proteoforms[[i]]$b_mass <- round(tt$ladder$b_mass, 2)
+      payload1$proteoforms[[i]]$y_mass <- round(tt$ladder$y_mass, 2)
+      payload1$proteoforms[[i]]$propensity <- round(tt$propensity, 2)
+      payload1$proteoforms[[i]]$tier_b <- tt$tier_b
+      payload1$proteoforms[[i]]$tier_y <- tt$tier_y
+      payload1$proteoforms[[i]]$ms2_stats <- tally_ms2_tiers(tt$tier_b, tt$tier_y)
+    }
+    payload1$scoring_mode <- new_mode
+    payload1
+  }
+
+  rescored_payload2 <- function(new_mode) {
+    if (!isTRUE(confounder_comparison_ready())) return(NULL)
+    cctx <- confounder_comparison_ctx()
+    if (is.null(cctx)) return(NULL)
+    tiers <- compute_confounder_tiers(cctx$target_pf, cctx$target_id, cctx$selected_conf_pfs, r_ref = cctx$r_ref, mz_ref = cctx$mz_ref,
+                                       safety_margin = cctx$safety_margin, mode = cctx$mode, scoring_mode = new_mode)
+    payload2 <- confounder_comparison()$payload2
+    target_tt <- tiers[[cctx$target_id]]
+    payload2$target$b_mass <- round(target_tt$ladder$b_mass, 2)
+    payload2$target$y_mass <- round(target_tt$ladder$y_mass, 2)
+    payload2$target$propensity <- round(target_tt$propensity, 2)
+    payload2$target$tier_b <- target_tt$tier_b
+    payload2$target$tier_y <- target_tt$tier_y
+    payload2$target$ms2_stats <- tally_ms2_tiers(target_tt$tier_b, target_tt$tier_y)
+    for (i in seq_along(payload2$confounders)) {
+      cid <- payload2$confounders[[i]]$id
+      tt <- tiers[[cid]]
+      if (is.null(tt)) next
+      payload2$confounders[[i]]$b_mass <- round(tt$ladder$b_mass, 2)
+      payload2$confounders[[i]]$y_mass <- round(tt$ladder$y_mass, 2)
+      payload2$confounders[[i]]$propensity <- round(tt$propensity, 2)
+      payload2$confounders[[i]]$tier_b <- tt$tier_b
+      payload2$confounders[[i]]$tier_y <- tt$tier_y
+      payload2$confounders[[i]]$ms2_stats <- tally_ms2_tiers(tt$tier_b, tt$tier_y)
+    }
+    payload2$scoring_mode <- new_mode
+    payload2
+  }
+
+  # Live re-scoring on a scoring-mode switch: unlike every other MS
+  # resolution parameter (which changes the MS1 envelope/collision geometry
+  # and so legitimately needs a full "Run analysis"), scoring_mode only
+  # changes the propensity score + tier fields (see compute_ladder_tiers()
+  # doc comment) -- the fragment MASSES, MS1 isotope envelopes, and
+  # confounder search results are all identical either way. Benchmarked
+  # directly (target + 8 realistic-size confounders): ~45ms GLM, ~95ms RF to
+  # fully re-tier -- fast enough to redo on every click rather than requiring
+  # "Run analysis" again. Re-sends a FULL payload (reusing already-computed
+  # MS1 envelopes/exon data, not recomputing them) through the same
+  # PT.renderSection1/2() entry points a fresh analysis uses, which is
+  # simplest and correctly re-wires listeners via their existing
+  # abort-controller cleanup -- the one visible tradeoff is that zoom/pan/
+  # filter view resets to default on every switch, same as "Run analysis"
+  # already does.
+  observeEvent(input$scoring_mode, {
+    new_mode <- input$scoring_mode %||% "glm"
+    withProgress(message = "Switching scoring mode...", value = 0, {
+      incProgress(0.1, detail = "Re-scoring relevant-proteoform comparison...")
+      payload1 <- rescored_payload1(new_mode)
+      if (!is.null(payload1)) {
+        # Plain R list, NOT pre-serialized -- sendCustomMessage() JSON-encodes
+        # the whole message itself (with the same auto_unbox behavior
+        # jsonlite::toJSON(auto_unbox=TRUE) elsewhere uses), so wrapping
+        # payload1 in toJSON() here would double-encode it as an escaped
+        # JSON string.
+        session$sendCustomMessage("pt_rescore_section", list(section = "s1", payload = payload1))
+      }
+      incProgress(0.5, detail = "Re-scoring confounder comparison...")
+
+      payload2 <- rescored_payload2(new_mode)
+      if (!is.null(payload2)) {
+        session$sendCustomMessage("pt_rescore_section", list(section = "s2", payload = payload2))
+      }
+      incProgress(0.4)
+    })
+  }, ignoreInit = TRUE)
+
+  # "Download peak data" buttons for both sections -- flattens the exact
+  # same payload already drawn on screen (flatten_section1/2_peaks(),
+  # R/viz_json.R) into a long-format TSV, one row per MS1 envelope point and
+  # one row per MS2 bond/ion-type. Re-tiers for the CURRENTLY selected
+  # scoring mode via rescored_payload1/2() rather than reading analysis()/
+  # confounder_comparison() directly -- those stay frozen at whichever mode
+  # was active when "Run analysis"/"Compare selected confounders" last ran,
+  # so without this a download right after a live scoring-mode switch would
+  # silently disagree with what's on screen.
+  output$btn_download_s1_peaks <- downloadHandler(
+    filename = function() {
+      gene <- isolate(input$gene_symbol)
+      tag <- if (!is.null(gene) && nzchar(gene)) sanitize_html_id(gene) else "proteoforms"
+      sprintf("proteoformtracker_%s_relevant-proteoforms_%s.tsv", tag, format(Sys.time(), "%Y%m%d-%H%M%S"))
+    },
+    content = function(file) {
+      payload1 <- rescored_payload1(isolate(input$scoring_mode) %||% "glm")
+      req(payload1)
+      df <- flatten_section1_peaks(payload1)
+      write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE, na = "")
+    }
+  )
+
+  output$btn_download_s2_peaks <- downloadHandler(
+    filename = function() {
+      gene <- isolate(input$gene_symbol)
+      tag <- if (!is.null(gene) && nzchar(gene)) sanitize_html_id(gene) else "target"
+      sprintf("proteoformtracker_%s_confounders_%s.tsv", tag, format(Sys.time(), "%Y%m%d-%H%M%S"))
+    },
+    content = function(file) {
+      payload2 <- rescored_payload2(isolate(input$scoring_mode) %||% "glm")
+      req(payload2)
+      df <- flatten_section2_peaks(payload2)
+      write.table(df, file, sep = "\t", row.names = FALSE, quote = FALSE, na = "")
+    }
+  )
 
   # ============================================================
   # Option 2: FASTA upload. Two genuinely independent steps:
@@ -1172,7 +1336,7 @@ function(input, output, session) {
       if (length(orf_choices) > 0) tagList(
         selectInput("fasta_orf_select", "Use this translation", choices = orf_choices, width = "420px"),
         textInput("fasta_ptm_spec", "PTMs on this translation (optional)",
-                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation,215_S_Sulfo", width = "420px")
+                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation; 215_S_Sulfo", width = "420px")
       ) else tags$p(class = "pt-note", "No ORF candidates to select."),
       hr(),
       h5("2. Known isoform(s) to compare against"),

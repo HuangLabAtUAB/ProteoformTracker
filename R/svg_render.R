@@ -55,36 +55,95 @@ compute_ladder_tiers <- function(pf_list, r_ref = 120000, mz_ref = 200, safety_m
   result
 }
 
-#' Same idea as compute_ladder_tiers() but for the single-target confounder
-#' view: tiers a target's own ladder against a set of confounder proteoforms
-#' rather than other checked proteoforms.
+#' Tiers for the section-2 confounder view: same flat id -> list(ladder,
+#' propensity, tier_b, tier_y) shape as compute_ladder_tiers() (drop-in
+#' replacement at the call site), but deliberately NOT the same algorithm.
+#' compute_ladder_tiers() is full N-way (every member's own bonds checked
+#' against every OTHER member) -- fine for section 1's typically-small
+#' checked set, but confirmed directly to take 1-3+ minutes for a target +
+#' 30 confounders (the search step's own max_candidates cap), since
+#' fragment_mass_collision_check() is O(bonds x bonds) per pair and N-way
+#' means O(N) such calls each against O(N) others -- ~930 pairwise ladder
+#' comparisons at N=31 vs. the 30 this function does instead:
+#'   - the TARGET's own tier_b/tier_y is still multi-way (common only if a
+#'     bond matches EVERY shown confounder, unique if none, partial
+#'     otherwise) -- this is the question that actually matters ("is this
+#'     target bond confounded by anything currently shown") and stays cheap:
+#'     one batched fragment_mass_collision_check(target, all confounders) call.
+#'   - each CONFOUNDER's own tier_b/tier_y is pairwise against the target
+#'     ONLY (binary common/unique, no "partial" -- confounder-vs-confounder
+#'     comparison isn't the question this view answers), one cheap call per
+#'     confounder rather than one call per confounder against every other
+#'     confounder too.
+#' Net effect: O(N) pairwise comparisons total instead of O(N^2).
 #'
-#' @param target_pf proteoform object (the confounder-search target)
-#' @param confounder_pfs named list of proteoform objects (real confounders,
-#'   from build_confounder_proteoforms())
+#' @param target_pf,target_id proteoform object and the id to key its own
+#'   entry under in the returned list (matches whatever key build_section2_
+#'   payload()'s `tiers[[target_id]]` lookup expects)
+#' @param confounder_pfs named list of confounder proteoform objects
 #' @param scoring_mode "glm" or "rf" -- see compute_ladder_tiers()
-#' @return list(ladder, propensity, tier_b, tier_y) for the target
-compute_confounder_tiers <- function(target_pf, confounder_pfs, r_ref = 120000, mz_ref = 200,
+#' @return named list, target_id/confounder id -> list(ladder, propensity,
+#'   tier_b, tier_y) -- same shape compute_ladder_tiers() returns
+compute_confounder_tiers <- function(target_pf, target_id, confounder_pfs, r_ref = 120000, mz_ref = 200,
                                       safety_margin = DEFAULT_SAFETY_MARGIN, mode = "denatured",
                                       scoring_mode = c("glm", "rf")) {
   scoring_mode <- match.arg(scoring_mode)
-  ladder <- generate_fragment_ladder(target_pf)
-  prop <- if (scoring_mode == "rf") {
-    fragmentation_propensity_rf(target_pf)$propensity_score
-  } else {
-    fragmentation_propensity(target_pf, mode = mode, method = "HCD")$propensity_score
+  score_of <- function(pf) {
+    if (scoring_mode == "rf") fragmentation_propensity_rf(pf)$propensity_score
+    else fragmentation_propensity(pf, mode = mode, method = "HCD")$propensity_score
   }
-  n_bonds <- length(ladder$b_mass)
+
+  target_ladder <- generate_fragment_ladder(target_pf)
+  target_prop <- score_of(target_pf)
+  n_bonds_t <- length(target_ladder$b_mass)
+
   if (length(confounder_pfs) == 0) {
-    return(list(ladder = ladder, propensity = prop, tier_b = rep("neutral", n_bonds), tier_y = rep("neutral", n_bonds)))
+    result <- list(list(ladder = target_ladder, propensity = target_prop,
+                         tier_b = rep("neutral", n_bonds_t), tier_y = rep("neutral", n_bonds_t)))
+    names(result) <- target_id
+    return(result)
   }
+
+  # Target vs. ALL confounders, one batched (cheap) call -- unchanged from
+  # the original compute_confounder_tiers()'s approach.
   cc <- fragment_mass_collision_check(target_pf, confounder_pfs, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin)
   n_others <- length(confounder_pfs)
   match_b <- Reduce(`+`, lapply(cc$per_candidate, function(d) as.integer(d$matched[d$ion_type == "b"])))
   match_y <- Reduce(`+`, lapply(cc$per_candidate, function(d) as.integer(d$matched[d$ion_type == "y"])))
-  tier_of <- function(mc) ifelse(mc == n_others, "common", ifelse(mc == 0, "unique", "partial"))
-  list(ladder = ladder, propensity = prop, tier_b = tier_of(match_b), tier_y = tier_of(match_y))
+  tier_of_multi <- function(mc) ifelse(mc == n_others, "common", ifelse(mc == 0, "unique", "partial"))
+  target_entry <- list(ladder = target_ladder, propensity = target_prop,
+                        tier_b = tier_of_multi(match_b), tier_y = tier_of_multi(match_y))
+  target_all_masses <- c(target_ladder$b_mass, target_ladder$y_mass)
+
+  # Each confounder vs. the target ONLY -- pairwise, binary. Computed
+  # directly here (mirroring fragment_mass_collision_check()'s own matching
+  # logic) rather than by calling it a second time per confounder: that
+  # function recomputes generate_fragment_ladder() for BOTH arguments on
+  # every call, so calling it once per confounder would regenerate the
+  # TARGET's own ladder -- a real pyteomics/reticulate round-trip -- 30
+  # extra times over. Confirmed directly: that redundancy alone was the
+  # dominant cost at a 30-confounder candidate list (turned a ~10s job into
+  # 35+s and climbing). target_all_masses (above) is already computed once;
+  # reusing it here keeps this loop to one new pyteomics call per confounder
+  # (its own ladder, unavoidable) plus cheap vectorized R arithmetic.
+  conf_entries <- lapply(confounder_pfs, function(cpf) {
+    cladder <- generate_fragment_ladder(cpf)
+    cprop <- score_of(cpf)
+    tol_b <- safety_margin * fwhm_mass(cladder$b_mass, mz_for_charge(cladder$b_mass, 1), r_ref, mz_ref)
+    tol_y <- safety_margin * fwhm_mass(cladder$y_mass, mz_for_charge(cladder$y_mass, 1), r_ref, mz_ref)
+    matched_b <- vapply(seq_along(cladder$b_mass), function(i) any(abs(target_all_masses - cladder$b_mass[i]) <= tol_b[i]), logical(1))
+    matched_y <- vapply(seq_along(cladder$y_mass), function(i) any(abs(target_all_masses - cladder$y_mass[i]) <= tol_y[i]), logical(1))
+    list(
+      ladder = cladder, propensity = cprop,
+      tier_b = ifelse(matched_b, "common", "unique"),
+      tier_y = ifelse(matched_y, "common", "unique")
+    )
+  })
+
+  result <- c(setNames(list(target_entry), target_id), conf_entries)
+  result
 }
+
 
 #' Cheap (no isotope-pattern) PAIRWISE MS2 fragment-ion overlap between the
 #' target and EACH confounder candidate independently -- one number per

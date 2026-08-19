@@ -20,7 +20,10 @@
 
 RF_ELEVATED_THRESHOLD <- 0.08
 RF_HIGH_THRESHOLD <- 0.15
-RF_VERY_HIGH_THRESHOLD <- 0.30
+# A third "Very high" tier (was 0.30, fold ~6.5x) was dropped -- confirmed
+# directly it almost never fires for realistic-length proteoforms, same
+# reasoning as GLM_VERY_HIGH_THRESHOLD's removal in R/fragmentation_
+# propensity.R.
 # isotope-panel computation gate (see R/isotope_envelope.R callers):
 # reuses the Elevated cutoff, since RF has no natural "baseline = 1.0"
 # concept the way the GLM's multiplicative formula does.

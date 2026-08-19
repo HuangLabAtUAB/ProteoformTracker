@@ -182,16 +182,6 @@ fluidPage(
       column(3, numericInput("ms_mz_ref", "Reference m/z", value = 200, min = 50, step = 10)),
       column(3, numericInput("ms_safety_margin", "Safety margin (x FWHM)", value = 1.75, min = 1, max = 5, step = 0.05)),
       column(3, selectInput("ms_mode", "Ionization mode", choices = c("Denatured" = "denatured", "Native" = "native")))
-    ),
-    fluidRow(
-      column(12, radioButtons("scoring_mode", "Fragmentation scoring mode", inline = TRUE,
-        choices = c(
-          "Calibrated (length-aware)" = "glm",
-          "RF ranking (no length -- for long proteoforms)" = "rf"
-        ),
-        selected = "glm"
-      ),
-      p(class = "pt-note", "Calibrated mode is the primary, auditable scoring formula, but a single long proteoform's own length can suppress every one of its bonds below the tier thresholds. RF ranking mode drops length entirely so long proteoforms can still be usefully tier-filtered and isotope-inspected -- it's a relative ranking within one proteoform, not a calibrated absolute score, and isn't comparable in magnitude to the calibrated mode's numbers."))
     )
   ),
 
@@ -225,7 +215,7 @@ fluidPage(
     div(class = "pt-card active",
       h4("Gene / isoform / proteoform selection"),
       fluidRow(
-        column(4, textInput("gene_symbol", "Gene symbol", value = "", placeholder = "e.g. CD44")),
+        column(4, textInput("gene_symbol", "Gene symbol", value = "", placeholder = "e.g. BCL2L1")),
         column(2, br(), actionButton("btn_load_gene", "Load isoforms", class = "btn-primary"))
       ),
       textOutput("gene_status"),
@@ -272,7 +262,17 @@ fluidPage(
           tags$div(id = "s1-stats-strip", class = "pt-stats-strip")
         ),
         div(class = "pt-viz-section-heading", "MS2 fragment ladder"),
+        div(class = "pt-mode-group", style = "margin-bottom:14px;",
+          radioButtons("scoring_mode", "Fragmentation scoring mode", inline = TRUE,
+            choices = c(
+              "RF ranking (no length -- for long proteoforms)" = "rf",
+              "Calibrated (length-aware)" = "glm"
+            ),
+            selected = "rf"
+          )
+        ),
         p(class = "pt-note", "Aligned on a shared exon axis. Scroll/pinch or use the +/- buttons to zoom, drag to pan. Hover a b/y tick once zoomed in enough to inspect it; the unique/partial/common counts next to each proteoform's title update live as you change the filter below."),
+        downloadButton("btn_download_s1_peaks", "Download peak data (TSV)", class = "btn-default btn-sm", style = "margin-bottom:10px;"),
         div(id = "s1-legend"),
         div(id = "s1-filters"),
         div(id = "s1-zoom"),
@@ -294,24 +294,35 @@ fluidPage(
         uiOutput("confounder_candidate_list_ui"),
         hr(),
         uiOutput("viz_script_s2"),
-        div(class = "pt-viz-section-heading", "MS1 charge-envelope overlay"),
-        tags$div(class = "pt-ms1-with-stats",
-          tags$div(class = "pt-ms1-main",
-            tags$svg(id = "s2-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
-            div(id = "s2-ms1-zoom")
-          ),
-          tags$div(id = "s2-stats-strip", class = "pt-stats-strip")
+        tags$div(id = "s2-ms1-toggle", class = "pt-collapsible-header", `data-collapse-target` = "s2-ms1-collapse-body",
+          tags$span(class = "pt-collapse-triangle pt-collapsed", HTML("&#9660;")),
+          h5(style = "display:inline; margin:0 0 0 6px;", "MS1 charge-envelope overlay")
+        ),
+        tags$div(id = "s2-ms1-collapse-body", style = "display:none;",
+          tags$div(class = "pt-ms1-with-stats",
+            tags$div(class = "pt-ms1-main",
+              tags$svg(id = "s2-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+              div(id = "s2-ms1-zoom")
+            ),
+            tags$div(id = "s2-stats-strip", class = "pt-stats-strip")
+          )
         ),
         div(id = "s2-legend"),
-        div(class = "pt-viz-section-heading", "MS2 fragment ladder"),
-        div(id = "s2-filters"),
-        div(id = "s2-zoom"),
-        tags$svg(id = "s2-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
-        div(id = "s2-info", class = "pt-info-box"),
-        p(class = "pt-note", "Click a b/y tick above (propensity score>1) to see that fragment ion's own isotope peaks below."),
-        div(id = "s2-frag-label", class = "pt-note", style = "font-weight:600;"),
-        tags$svg(id = "s2-frag-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
-        div(id = "s2-frag-ms1-zoom")
+        tags$div(id = "s2-ms2-toggle", class = "pt-collapsible-header", `data-collapse-target` = "s2-ms2-collapse-body",
+          tags$span(class = "pt-collapse-triangle pt-collapsed", HTML("&#9660;")),
+          h5(style = "display:inline; margin:0 0 0 6px;", "MS2 fragment ladder")
+        ),
+        tags$div(id = "s2-ms2-collapse-body", style = "display:none;",
+          downloadButton("btn_download_s2_peaks", "Download peak data (TSV)", class = "btn-default btn-sm", style = "margin-bottom:10px;"),
+          div(id = "s2-filters"),
+          div(id = "s2-zoom"),
+          tags$svg(id = "s2-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
+          div(id = "s2-info", class = "pt-info-box"),
+          p(class = "pt-note", "Click a b/y tick above (propensity score>1) to see that fragment ion's own isotope peaks below."),
+          div(id = "s2-frag-label", class = "pt-note", style = "font-weight:600;"),
+          tags$svg(id = "s2-frag-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+          div(id = "s2-frag-ms1-zoom")
+        )
       )
     )
   ),
