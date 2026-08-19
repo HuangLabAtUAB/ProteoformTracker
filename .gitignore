@@ -17,6 +17,13 @@ renv/staging/
 /data/*
 !/data/.gitkeep
 
+# One-off model-calibration exploration scripts and their cached outputs
+# (scratch work, not part of the deployed app or reproducible standalone)
+/scripts/validate_propensity_*.R
+/scripts/build_propensity_rf_model.R
+/scripts/*.rds
+/scripts/plots/
+
 # OS
 .DS_Store
 

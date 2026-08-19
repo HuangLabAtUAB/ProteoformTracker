@@ -5,11 +5,18 @@
 # "apply PTM to ladder" logic needed here.
 #
 # Grammar (one isoform's PTM text box):
-#   "133_Ser_Phospho; 210_Thr_Phospho,215_Tyr_Sulfo"
+#   "133_S_Phospho; 210_T_Phospho,215_Y_Sulfo"
 #   semicolon = separate proteoforms derived from this isoform
 #   comma     = multiple PTMs co-occurring on one proteoform (capped, see
 #               PTM_SPEC_MAX_PER_PROTEOFORM)
-#   each PTM  = "<1-based residue>_<3-letter AA code>_<Unimod name>"
+#   each PTM  = "<1-based residue>_<AA code>_<Unimod name>"
+#   AA code   = single-letter (S, T, Y, ...) -- matches the single-letter
+#               sequence already shown in the isoform-table hover popover
+#               (www/ptracker_viz.js's formatSequenceWithRuler()), so a
+#               residue read off there can be typed in directly with no
+#               3-letter translation step. The 3-letter form (Ser, Thr,
+#               Tyr, ...) is still accepted too, for anyone used to that
+#               convention or copying a spec from older notes.
 
 PTM_SPEC_MAX_PER_PROTEOFORM <- 5
 
@@ -67,7 +74,7 @@ parse_ptm_spec_text <- function(sequence, spec_text, label = "isoform") {
         break
       }
       pos <- suppressWarnings(as.integer(parts[1]))
-      aa3 <- parts[2]
+      aa_code <- parts[2]
       ptm_name <- parts[3]
 
       if (is.na(pos) || pos < 1 || pos > nchar(sequence)) {
@@ -78,11 +85,20 @@ parse_ptm_spec_text <- function(sequence, spec_text, label = "isoform") {
         ok <- FALSE
         break
       }
-      aa3_norm <- paste0(toupper(substr(aa3, 1, 1)), tolower(substr(aa3, 2, nchar(aa3))))
-      aa1 <- .AA3_TO_1[[aa3_norm]]
+      # Single-letter code (S, T, Y, ...) is the primary/documented form --
+      # matches the sequence popover's own single-letter display, so a
+      # residue read off there needs no translation. 3-letter (Ser, Thr,
+      # Tyr, ...) still accepted for backward compatibility.
+      aa1 <- if (nchar(aa_code) == 1) {
+        code <- toupper(aa_code)
+        if (code %in% STANDARD_AA) code else NULL
+      } else {
+        aa3_norm <- paste0(toupper(substr(aa_code, 1, 1)), tolower(substr(aa_code, 2, nchar(aa_code))))
+        .AA3_TO_1[[aa3_norm]]
+      }
       if (is.null(aa1)) {
         warnings_out <- c(warnings_out, sprintf(
-          '%s group %d: unknown residue code "%s" -- group skipped.', label, gi, aa3
+          '%s group %d: unknown residue code "%s" -- group skipped.', label, gi, aa_code
         ))
         ok <- FALSE
         break
@@ -91,7 +107,7 @@ parse_ptm_spec_text <- function(sequence, spec_text, label = "isoform") {
       if (actual != aa1) {
         warnings_out <- c(warnings_out, sprintf(
           "%s group %d: residue %d is %s in this isoform, not %s -- group skipped.",
-          label, gi, pos, actual, aa3
+          label, gi, pos, actual, aa_code
         ))
         ok <- FALSE
         break

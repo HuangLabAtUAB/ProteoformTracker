@@ -10,6 +10,36 @@ test_that("parse_ptm_spec_text parses a single valid PTM", {
   expect_equal(res$groups[[1]][[1]]$name, "Phospho")
 })
 
+test_that("parse_ptm_spec_text accepts the single-letter AA code (primary form)", {
+  seq <- "MDKFWWHAAWGLCLVPLSLAQIDLNITCRFAGVFHVEKNGRYSISRTEAADLCKAFNSTLPT"
+  expect_equal(substr(seq, 62, 62), "T")
+  res <- parse_ptm_spec_text(seq, "62_T_Phospho", "test")
+  expect_length(res$warnings, 0)
+  expect_length(res$groups, 1)
+  expect_equal(res$groups[[1]][[1]]$site, 62L)
+  expect_equal(res$groups[[1]][[1]]$name, "Phospho")
+})
+
+test_that("single-letter and 3-letter AA codes are interchangeable and both validate against the sequence", {
+  seq <- "MDKFWWHAAWGLCLVPLSLAQIDLNITCRFAGVFHVEKNGRYSISRTEAADLCKAFNSTLPT"
+  res1 <- parse_ptm_spec_text(seq, "62_T_Phospho", "test")
+  res3 <- parse_ptm_spec_text(seq, "62_Thr_Phospho", "test")
+  expect_equal(res1$groups[[1]][[1]]$site, res3$groups[[1]][[1]]$site)
+  expect_equal(res1$groups[[1]][[1]]$mass_delta_mono, res3$groups[[1]][[1]]$mass_delta_mono)
+
+  # mismatch is caught the same way regardless of which form was used
+  res_bad <- parse_ptm_spec_text(seq, "62_L_Phospho", "test")
+  expect_length(res_bad$groups, 0)
+  expect_match(res_bad$warnings[1], "residue 62 is T.*not L")
+})
+
+test_that("an unknown single-letter code (not one of the 20 standard AAs) is rejected", {
+  seq <- "MDKFWWHAAWGLCLVPLSLAQIDLNITCRFAGVFHVEKNGRYSISRTEAADLCKAFNSTLPT"
+  res <- parse_ptm_spec_text(seq, "62_X_Phospho", "test")
+  expect_length(res$groups, 0)
+  expect_match(res$warnings[1], "unknown residue code")
+})
+
 test_that("semicolons separate proteoforms, commas co-occur on one", {
   seq <- "MDKFWWHAAWGLCLVPLSLAQIDLNITCRFAGVFHVEKNGRYSISRTEAADLCKAFNSTLPT"
   res <- parse_ptm_spec_text(seq, "62_Thr_Phospho; 1_Met_Acetyl,7_His_Methyl", "test")

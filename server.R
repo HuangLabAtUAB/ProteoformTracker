@@ -53,6 +53,32 @@ function(input, output, session) {
   # comparison" -- the ladder panel came back showing the old TP53 result).
   analysis_ready <- reactiveVal(FALSE)
 
+  # Snapshot of whatever `analysis` below last computed, kept around ONLY so
+  # the on-demand MS2 fragment-isotope handler (input$frag_ms1_request, see
+  # below) can look up the right proteoform object without re-running the
+  # whole "Run analysis" pipeline -- computing a b/y fragment's own isotope
+  # pattern needs the SAME proteoform (sequence + PTMs) and MS settings
+  # (mode/r_ref/mz_ref) `analysis` already resolved, just for one fragment
+  # instead of the whole checked set.
+  analysis_ctx <- reactiveVal(NULL)
+
+  # Context handed from the confounder SEARCH step (cheap: mass/mz index
+  # query + per-candidate fragment ladder, no isotope-pattern computation)
+  # to the "Compare selected confounders" step (expensive: isotope MS1
+  # envelopes + the full multi-way tier comparison, but only for whichever
+  # candidates the user actually leaves checked). Splitting these into two
+  # clicks is what lets a target with hundreds of raw m/z-collision hits
+  # stay fast: envelope computation, the genuinely slow part, no longer
+  # runs on every candidate the search turns up, only the ones the user
+  # keeps -- and it lets a user with outside knowledge (e.g. RNA-seq
+  # expression) exclude candidates they know can't actually be present.
+  confounder_ctx <- reactiveVal(NULL)
+  # Same "gate a stale eventReactive value" role as analysis_ready() above,
+  # but for confounder_comparison() below -- see analysis_ready()'s own
+  # doc comment for why this can't just be inferred from confounder_ctx()
+  # being non-NULL.
+  confounder_comparison_ready <- reactiveVal(FALSE)
+
   # "Set" buttons for the two global settings panels (MS strategy, MS
   # resolution parameters): clicking Set greys the button out to show the
   # user their choices there are locked in; changing anything in that same
@@ -119,7 +145,10 @@ function(input, output, session) {
   output$proteoform_table <- renderTable(NULL)
   output$stale_notice <- renderText("")
   output$viz_script <- renderUI(NULL)
-  output$confounder_status <- renderText("")
+  output$confounder_status <- renderUI(NULL)
+  output$confounder_candidate_list_ui <- renderUI(NULL)
+  output$viz_script_s2 <- renderUI(NULL)
+  output$confounder_comparison_status <- renderText("")
   # digestion_candidates_ui/digestion_coverage_text sit inside a SECOND,
   # nested conditionalPanel (ms_strategy == 'middledown' inside input_mode
   # == 'gene') -- same suspend-while-hidden gap as above: becoming visible
@@ -154,6 +183,7 @@ function(input, output, session) {
   output$rmats_parse_status <- renderText("")
   for (nm in c("gene_status", "isoform_catalog_ui", "ptm_warnings_ui", "proteoform_table",
                "stale_notice", "viz_script", "confounder_status",
+               "confounder_candidate_list_ui", "viz_script_s2", "confounder_comparison_status",
                "digestion_candidates_ui", "digestion_coverage_text", "digestion_summary_text",
                "digestion_per_parent_ui", "fasta_status", "fasta_results_ui",
                "rmats_status", "rmats_results_ui", "rmats_parse_status")) {
@@ -309,11 +339,16 @@ function(input, output, session) {
       } else ""
       tags$div(class = "pt-isorow",
         checkboxInput(paste0("iso_chk_", tid), NULL, value = default_checked),
-        tags$span(class = "pt-id", tid),
+        # pt-seq-hover + data-seq: hover this id to look up residue numbers
+        # for the PTM spec box right next to it (e.g. "133_T_Phospho") --
+        # see www/ptracker_viz.js's wireSeqHoverDelegation() for the popover
+        # itself; this just carries the raw sequence, formatting happens
+        # client-side.
+        tags$span(class = "pt-id pt-seq-hover", `data-seq` = pf$sequence, tid),
         tags$span(class = "pt-meta", sprintf("%d aa, %.1f Da", nchar(pf$sequence), mass)),
         tags$span(class = "pt-meta", sprintf("exons %s", compress_exon_ranges(exon_nums))),
         textInput(paste0("iso_ptm_", tid), NULL, value = ptm_default,
-                  placeholder = "e.g. 133_Thr_Phospho; 210_Pro_Oxidation,215_Ser_Sulfo", width = "420px"),
+                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation,215_S_Sulfo", width = "420px"),
         if (nzchar(synonym_note)) tags$span(class = "pt-note", style = "font-size:11px;", synonym_note)
       )
     })
@@ -589,16 +624,19 @@ function(input, output, session) {
 
   # ---- Run-gated heavy analysis (MS1 + ladder + confounder search) ----
   analysis <- eventReactive(input$btn_run_analysis, {
+   withProgress(message = "Running analysis...", value = 0, {
     r_ref <- isolate(input$ms_r_ref)
     mz_ref <- isolate(input$ms_mz_ref)
     safety_margin <- isolate(input$ms_safety_margin)
     mode <- isolate(input$ms_mode)
+    scoring_mode <- isolate(input$scoring_mode) %||% "glm"
     strategy <- isolate(input$ms_strategy)
     protease <- isolate(input$md_protease)
     cat_result <- isolate(catalog())
     residue_offset <- list()
     dg <- NULL
 
+    incProgress(0.05, detail = "Preparing confounder search pool...")
     # Real confounders for a middle-down target are OTHER proteins' digest
     # peptides (cut with the SAME protease), not other intact proteins -- an
     # intact 4 kDa protein and a 4 kDa peptide cut from the middle of some
@@ -606,16 +644,14 @@ function(input, output, session) {
     # digested pool captures the second. Falls back to the intact-protein
     # index for top-down. First use of a given enzyme is a real ~20-40s
     # proteome-scale computation (cached to disk after that), hence the
-    # progress message -- see get_digested_reference_pool().
+    # progress detail -- see get_digested_reference_pool().
     confounder_mass_index <- if (identical(strategy, "middledown")) {
-      withProgress(message = paste("Preparing", protease, "-digested confounder pool..."), value = 0.3, {
-        tryCatch(
-          get_digested_reference_pool(protease, on_build_start = function() {
-            incProgress(0, detail = "first use of this enzyme: one-time proteome-wide digest (~30s), then cached to disk")
-          }),
-          error = function(e) NULL
-        )
-      })
+      tryCatch(
+        get_digested_reference_pool(protease, on_build_start = function() {
+          incProgress(0, detail = paste("first use of", protease, "-- one-time proteome-wide digest (~30s), then cached"))
+        }),
+        error = function(e) NULL
+      )
     } else {
       # Top-down mass filter (see "MS strategy" panel): the confounder
       # search pool is restricted to the SAME intact-protein mass range the
@@ -628,6 +664,7 @@ function(input, output, session) {
                               reference_mass_index$mass <= topdown_mass_max_da, ]
     }
 
+    incProgress(0.1, detail = "Resolving selected proteoforms...")
     if (identical(strategy, "middledown")) {
       dg <- isolate(digestion_result())
       req(dg$candidates, nrow(dg$candidates) > 0)
@@ -648,25 +685,72 @@ function(input, output, session) {
       iso_key_of <- vapply(d$rows[checked_ids], function(r) r$iso_key, character(1))
     }
 
+    incProgress(0.1, detail = "Computing intact-protein masses...")
     masses <- vapply(pf_list, function(pf) proteoform_mass(pf)$mass, numeric(1))
-    tiers <- compute_ladder_tiers(pf_list, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, mode = mode)
 
-    payload1 <- build_section1_payload(pf_list, iso_key_of, masses, tiers, cat_result$exon_table, residue_offset = residue_offset)
-    for (i in seq_along(payload1$proteoforms)) {
-      pf <- pf_list[[payload1$proteoforms[[i]]$id]]
-      env <- predict_charge_envelope(pf$sequence, masses[[payload1$proteoforms[[i]]$id]], mode = mode)
-      payload1$proteoforms[[i]]$env <- Map(function(z, mz, ri) list(z = z, mz = round(mz, 2), rel = round(ri, 4)),
-                                            env$z, env$mz, env$relative_intensity)
+    incProgress(0.15, detail = "Comparing fragment ladders across proteoforms...")
+    tiers <- compute_ladder_tiers(pf_list, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, mode = mode, scoring_mode = scoring_mode)
+
+    # MS1 stat-tile summary: how many of the checked set's own charge-state
+    # peaks land close enough to ANOTHER checked proteoform's peak to be
+    # ambiguous (envelope_crowding_check(), R/ms1_scoring.R -- already
+    # implemented/tested, just not previously surfaced to the user). Only
+    # meaningful with >=2 proteoforms checked.
+    ms1_stats_1 <- NULL
+    if (length(pf_list) >= 2) {
+      crowd <- envelope_crowding_check(pf_list, mode = mode, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin)
+      crowded_keys <- unique(c(paste(crowd$flags$id1, crowd$flags$z1), paste(crowd$flags$id2, crowd$flags$z2)))
+      total_peaks_1 <- nrow(crowd$peaks)
+      n_crowded_1 <- length(crowded_keys)
+      ms1_stats_1 <- list(total_peaks = total_peaks_1, crowded_peaks = n_crowded_1, clean_peaks = total_peaks_1 - n_crowded_1)
     }
 
+    payload1 <- build_section1_payload(pf_list, iso_key_of, masses, tiers, cat_result$exon_table, residue_offset = residue_offset, scoring_mode = scoring_mode, ms1_stats = ms1_stats_1)
+    # MS1 isotope patterns only -- MS2 fragment isotope peaks are NOT
+    # precomputed here. Every checked proteoform's full fragment ladder can
+    # have 100+ bonds clearing the "worth showing" propensity threshold, and
+    # each one's real isotope pattern is its own IsoSpecPy call (~50-100ms);
+    # eagerly computing and embedding ALL of them (confirmed directly: ~2MB
+    # of JSON per ~750-residue proteoform, ~16s of compute) is exactly what
+    # made "Run analysis" crawl and briefly hang the browser on a 3-way,
+    # ~80kDa comparison. The client already gets everything it needs to know
+    # WHICH bonds qualify for free (propensity/tier_b/tier_y/axis_pos, all
+    # cheap, already below) -- the expensive isotope pattern itself is
+    # computed on demand, only for the 1-3 fragments actually clicked, via
+    # input$frag_ms1_request below.
+    n_pf <- max(1, length(payload1$proteoforms))
+    for (i in seq_along(payload1$proteoforms)) {
+      id <- payload1$proteoforms[[i]]$id
+      pf <- pf_list[[id]]
+      incProgress(0.3 / n_pf, detail = paste("MS1 isotope pattern:", id))
+      ms1_peaks <- predict_ms1_peaks(pf, mode = mode, r_ref = r_ref, mz_ref = mz_ref)
+      payload1$proteoforms[[i]]$env <- ms1_peaks_json(ms1_peaks)
+    }
+    # Carried through so the client can compute the instrument's own
+    # resolving-power FWHM at any m/z (fwhm_mz(), R/resolving_power.R,
+    # reimplemented client-side in www/ptracker_viz.js) for the MS1 peak
+    # hover tooltip's cross-proteoform overlap readout, without a server
+    # round-trip per hover.
+    payload1$r_ref <- r_ref
+    payload1$mz_ref <- mz_ref
+
+    incProgress(0.15, detail = "Searching for confounding proteins...")
     target_id <- isolate(input$pf_target_select)
-    payload2 <- NULL
+    target_pf_for_ctx <- NULL
+    candidates_summary <- NULL
+    confounder_ctx(NULL)
     if (!is.null(target_id) && nzchar(target_id) && target_id %in% names(pf_list) && !is.null(confounder_mass_index)) {
       target_pf <- pf_list[[target_id]]
+      target_pf_for_ctx <- target_pf
       target_mass <- masses[[target_id]]
+      # m/z-domain collision search only applies to the intact-protein
+      # reference pool (reference_mz_index was built against it) -- a
+      # middle-down digested-peptide pool has no matching m/z index, so
+      # that case falls back to mass-domain-only, same as before.
+      mz_index_for_search <- if (!identical(strategy, "middledown")) reference_mz_index[[mode]] else NULL
       confounder_result <- tryCatch(
-        search_confounding_proteins_real(target_pf, confounder_mass_index, mode = mode,
-                                          r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin),
+        search_confounding_proteins_combined(target_pf, confounder_mass_index, mz_index = mz_index_for_search,
+                                              mode = mode, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin),
         error = function(e) NULL
       )
       target_iso_key <- iso_key_of[[target_id]]
@@ -675,20 +759,149 @@ function(input, output, session) {
         row <- dg$candidates[dg$candidates$id == target_id, ]
         target_exon_table <- shift_exon_table_for_peptide(target_exon_table, row$start[1], row$end[1])
       }
-      confounder_tiers <- compute_confounder_tiers(target_pf, list(), r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, mode = mode)
-      confounder_envs <- list()
-      if (!is.null(confounder_result) && nrow(confounder_result$candidates) > 0) {
-        conf_pfs <- build_confounder_proteoforms(confounder_result$candidates$id, confounder_mass_index)
-        confounder_tiers <- compute_confounder_tiers(target_pf, conf_pfs, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, mode = mode)
-        confounder_envs <- lapply(conf_pfs, function(p) predict_charge_envelope(p$sequence, proteoform_mass(p)$mass, mode = mode))
+
+      # Everything below is deliberately the CHEAP half of what used to run
+      # eagerly here: real fragment ladders (arithmetic + one batched
+      # pyteomics call per candidate) and a pairwise (not multi-way) MS2
+      # overlap count, so a candidate list -- even a large one -- stays
+      # fast enough to show immediately. The expensive half (isotope MS1
+      # envelopes, and the multi-way tier comparison that depends on
+      # exactly which candidates end up compared) is deferred to
+      # confounder_comparison() below, run only for whichever candidates
+      # the user leaves checked in the list this produces.
+      conf_pfs <- list()
+      ms2_overlap <- integer(0)
+      cands <- confounder_result$candidates
+      target_total_ms2 <- 2L * (nchar(target_pf$sequence) - 1L)
+      if (!is.null(cands) && nrow(cands) > 0) {
+        incProgress(0.1, detail = sprintf("Building fragment ladders for %d candidate(s)...", nrow(cands)))
+        conf_pfs <- build_confounder_proteoforms(cands$id, confounder_mass_index)
+        ms2_overlap <- confounder_ms2_overlap_counts(target_pf, conf_pfs, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin)
+        cands$n_shared_ms2 <- unname(ms2_overlap[cands$id])
       }
-      payload2 <- build_section2_payload(target_pf, target_mass, confounder_tiers, target_exon_table, confounder_result, confounder_envs)
-      target_env <- predict_charge_envelope(target_pf$sequence, target_mass, mode = mode)
-      payload2$target$env <- Map(function(z, mz, ri) list(z = z, mz = round(mz, 2), rel = round(ri, 4)),
-                                  target_env$z, target_env$mz, target_env$relative_intensity)
+
+      candidates_summary <- list(
+        candidates = cands, target_total_ms2 = target_total_ms2,
+        window_da = confounder_result$window_da, best_charge_state = confounder_result$best_charge_state,
+        n_candidates_before_cap = confounder_result$n_candidates_before_cap
+      )
+
+      confounder_ctx(list(
+        target_pf = target_pf, target_mass = target_mass, conf_pfs = conf_pfs, candidates = cands,
+        mz_collision_detail = confounder_result$mz_collision_detail,
+        window_da = confounder_result$window_da, best_charge_state = confounder_result$best_charge_state,
+        target_exon_table = target_exon_table,
+        mode = mode, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin, scoring_mode = scoring_mode
+      ))
     }
 
-    list(payload1 = payload1, payload2 = payload2, target_id = target_id)
+    incProgress(0.05, detail = "Finishing up...")
+    analysis_ctx(list(pf_list = pf_list, mode = mode, r_ref = r_ref, mz_ref = mz_ref,
+                       target_id = target_id, target_pf = target_pf_for_ctx))
+
+    list(payload1 = payload1, target_id = target_id, candidates_summary = candidates_summary)
+   })
+  })
+
+  observeEvent(input$btn_run_analysis, {
+    # A fresh search invalidates any comparison rendered from the PREVIOUS
+    # search's candidate list -- see confounder_comparison_ready()'s own
+    # doc comment. Bundled with the existing analysis_locked/analysis_ready
+    # observer above rather than a separate one, since both fire on exactly
+    # the same click.
+    confounder_comparison_ready(FALSE)
+  })
+
+  # ---- "Compare selected confounders": the deferred expensive half ----
+  # (isotope MS1 envelopes + the multi-way tier comparison) for ONLY the
+  # candidates still checked in confounder_candidate_list_ui below. Reads
+  # confounder_ctx() (set by the search step above) rather than re-deriving
+  # anything, so re-clicking after changing checkboxes is fast/cheap on its
+  # own front end (list filtering only) even though the isotope computation
+  # itself is unavoidably the same per-candidate cost as before -- just now
+  # scoped to however many the user actually kept.
+  observeEvent(input$btn_compare_confounders, { confounder_comparison_ready(TRUE) })
+
+  confounder_comparison <- eventReactive(input$btn_compare_confounders, {
+   withProgress(message = "Comparing selected confounders...", value = 0, {
+    ctx <- confounder_ctx()
+    req(ctx)
+    all_ids <- names(ctx$conf_pfs)
+    selected_ids <- Filter(function(id) isTRUE(isolate(input[[paste0("conf_chk_", sanitize_html_id(id))]])), all_ids)
+    selected_conf_pfs <- ctx$conf_pfs[selected_ids]
+    selected_candidates <- if (!is.null(ctx$candidates) && nrow(ctx$candidates) > 0) {
+      ctx$candidates[ctx$candidates$id %in% selected_ids, ]
+    } else {
+      ctx$candidates
+    }
+
+    incProgress(0.15, detail = sprintf("Comparing fragment ladders for %d selected confounder(s)...", length(selected_conf_pfs)))
+    confounder_tiers <- compute_confounder_tiers(ctx$target_pf, selected_conf_pfs, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref,
+                                                  safety_margin = ctx$safety_margin, mode = ctx$mode, scoring_mode = ctx$scoring_mode)
+
+    n_sel <- max(1, length(selected_conf_pfs))
+    confounder_envs <- list()
+    for (id in selected_ids) {
+      incProgress(0.55 / n_sel, detail = paste("MS1 isotope pattern:", id))
+      confounder_envs[[id]] <- predict_ms1_peaks(selected_conf_pfs[[id]], mode = ctx$mode, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref)
+    }
+
+    # MS1 stat-tile summary, scoped to the SELECTED confounder set only --
+    # deselecting a confounder here should un-flag any target peak whose
+    # only reported collision was with that (now excluded) confounder.
+    incProgress(0.1, detail = "Computing MS1 peak overlap...")
+    target_envelope <- predict_charge_envelope(ctx$target_pf$sequence, ctx$target_mass, mode = ctx$mode)
+    total_peaks_2 <- nrow(target_envelope)
+    colliding_z <- if (!is.null(ctx$mz_collision_detail) && nrow(ctx$mz_collision_detail) > 0) {
+      unique(ctx$mz_collision_detail$target_z[ctx$mz_collision_detail$id %in% selected_ids])
+    } else {
+      integer(0)
+    }
+    n_colliding_2 <- length(colliding_z)
+    ms1_stats_2 <- list(total_peaks = total_peaks_2, crowded_peaks = n_colliding_2, clean_peaks = total_peaks_2 - n_colliding_2)
+
+    confounder_result_selected <- list(
+      window_da = ctx$window_da, best_charge_state = ctx$best_charge_state,
+      candidates = selected_candidates, mz_collision_detail = ctx$mz_collision_detail,
+      n_candidates_before_cap = length(all_ids)
+    )
+    payload2 <- build_section2_payload(ctx$target_pf, ctx$target_mass, confounder_tiers, ctx$target_exon_table,
+                                        confounder_result_selected, confounder_envs, scoring_mode = ctx$scoring_mode, ms1_stats = ms1_stats_2)
+    incProgress(0.1, detail = "MS1 isotope pattern: target")
+    target_ms1_peaks <- predict_ms1_peaks(ctx$target_pf, mode = ctx$mode, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref)
+    payload2$target$env <- ms1_peaks_json(target_ms1_peaks)
+    payload2$r_ref <- ctx$r_ref
+    payload2$mz_ref <- ctx$mz_ref
+
+    list(payload2 = payload2, n_selected = length(selected_ids), n_total = length(all_ids))
+   })
+  })
+
+  # On-demand MS2 fragment-isotope peaks: computed here, one (proteoform,
+  # bond, ion) triple at a time, ONLY when the client actually clicks a b/y
+  # tick on the ladder (www/ptracker_viz.js's wireFragmentClick()) -- see the
+  # comment above payload1's MS1-only loop for why this moved off the eager
+  # "Run analysis" path. input$frag_ms1_request is set via
+  # Shiny.setInputValue() with {priority: "event"} so repeat clicks on the
+  # same bond still fire this (an "event"-priority input re-fires even when
+  # its value is unchanged, unlike a normal reactive input).
+  observeEvent(input$frag_ms1_request, {
+    ctx <- analysis_ctx()
+    req(ctx)
+    reqs <- input$frag_ms1_request
+    is_section2 <- identical(reqs$section, "s2")
+    entries <- lapply(reqs$requests, function(it) {
+      pf <- if (is_section2) ctx$target_pf else ctx$pf_list[[it$id]]
+      if (is.null(pf)) return(NULL)
+      n <- nchar(pf$sequence)
+      if (!(it$ion %in% c("b", "y")) || it$p < 1 || it$p > n - 1) return(NULL)
+      peaks <- predict_ms1_peaks(fragment_pseudo_proteoform(pf, it$p, it$ion),
+                                  mode = ctx$mode, r_ref = ctx$r_ref, mz_ref = ctx$mz_ref)
+      list(id = it$id, p = it$p, ion = it$ion, mass = round(peaks$mass, 2), env = ms1_peaks_json(peaks))
+    })
+    entries <- Filter(Negate(is.null), entries)
+    session$sendCustomMessage("pt_frag_ms1_response",
+      list(requestId = reqs$requestId, section = reqs$section, entries = entries))
   })
 
   output$stale_notice <- renderText({
@@ -712,20 +925,136 @@ function(input, output, session) {
     if (is.null(catalog()) || !analysis_ready()) return(NULL)
     a <- analysis()
     j1 <- jsonlite::toJSON(a$payload1, auto_unbox = TRUE, digits = 4, null = "null")
-    j2 <- if (!is.null(a$payload2)) jsonlite::toJSON(a$payload2, auto_unbox = TRUE, digits = 4, null = "null") else "null"
+    # Section 2's own chart/legend/stats belong to whichever confounder
+    # SELECTION was last compared -- a fresh "Run analysis" click means a
+    # fresh candidate list (confounder_candidate_list_ui, rendered
+    # separately from the same analysis() value), so any previously
+    # rendered section-2 chart is stale and cleared here rather than left
+    # showing a comparison against candidates that may no longer even be
+    # in the list. The candidate list's own script re-expands s2-collapse-
+    # body right after this, once it has real content to show.
     tags$script(HTML(sprintf(
-      "PT.renderSection1(%s); var __pt_p2 = %s; if (__pt_p2) { PT.renderSection2(__pt_p2); } else { document.getElementById('s2-ladder').innerHTML=''; document.getElementById('s2-ms1').innerHTML=''; document.getElementById('s2-legend').innerHTML='<p style=\"color:#888;font-size:12px;\">No confounder-search target selected, or no reference mass index loaded.</p>'; }",
-      j1, j2
+      "PT.renderSection1(%s); ['s2-ladder','s2-ms1'].forEach(function(id){var e=document.getElementById(id); if(e) e.innerHTML='';}); ['s2-legend','s2-stats-strip','s2-row-stats'].forEach(function(id){var e=document.getElementById(id); if(e) e.innerHTML='';});",
+      j1
     )))
   })
 
-  output$confounder_status <- renderText({
-    if (is.null(catalog()) || !analysis_ready()) return("")
+  # renderUI (not renderText) so the "Showing the XX highest-priority of
+  # XXX total found" callout can highlight its own numbers in bold/larger
+  # type -- the single most decision-relevant fact in this line (how much
+  # of the real hit list is actually being shown) was otherwise reading as
+  # plain text no more prominent than the surrounding sentence.
+  output$confounder_status <- renderUI({
+    if (is.null(catalog()) || !analysis_ready()) return(NULL)
     a <- analysis()
-    if (is.null(a$target_id) || !nzchar(a$target_id)) return("Pick a confounder-search target below the proteoform table, then Run analysis.")
-    if (is.null(reference_mass_index)) return("No reference-proteome mass index loaded -- run scripts/build_reference_proteome.R.")
-    if (is.null(a$payload2)) return("Confounder search failed for this target.")
-    sprintf("Target: %s. %d real confounding protein(s) found in window.", a$target_id, length(a$payload2$confounders))
+    if (is.null(a$target_id) || !nzchar(a$target_id)) return(p(class = "pt-note", "Pick a confounder-search target below the proteoform table, then Run analysis."))
+    if (is.null(reference_mass_index)) return(p(class = "pt-note", "No reference-proteome mass index loaded -- run scripts/build_reference_proteome.R."))
+    cs <- a$candidates_summary
+    if (is.null(cs)) return(p(class = "pt-note", "Confounder search failed for this target."))
+    cands <- cs$candidates
+    if (is.null(cands) || nrow(cands) == 0) {
+      return(p(class = "pt-note", sprintf("Target: %s. No real confounding proteins found in the current mass/m-z window.", a$target_id)))
+    }
+    n_mass <- sum(cands$found_via == "mass"); n_mz <- sum(cands$found_via == "mz"); n_both <- sum(cands$found_via == "both")
+    n_before <- cs$n_candidates_before_cap %||% nrow(cands)
+    cap_note <- if (!is.na(n_before) && n_before > nrow(cands)) {
+      tagList(" Showing the ",
+        tags$strong(style = "font-size:1.3em;", nrow(cands)),
+        " highest-priority of ",
+        tags$strong(style = "font-size:1.3em;", n_before),
+        " total found -- capped to keep the search fast.")
+    } else NULL
+    p(class = "pt-note",
+      sprintf("Target: %s. %d real confounding protein(s) found (%d by mass window, %d by m/z collision, %d by both).",
+              a$target_id, nrow(cands), n_mass, n_mz, n_both),
+      cap_note,
+      " Select which to include below, then \"Compare selected confounders\".")
+  })
+
+  # The confounder candidate list itself -- rendered as soon as the SEARCH
+  # step (cheap: mass/m-z index query + a pairwise, no-isotope MS2 overlap
+  # count per candidate) completes, well before any isotope-envelope work
+  # runs. Mirrors the pep_chk_<sanitized id> checkbox pattern the middle-
+  # down peptide picker already uses (digestion_candidates_ui above): a
+  # per-row checkboxInput, default-checked, that reads back its OWN prior
+  # value via isolate() on re-render so toggling one candidate and then
+  # e.g. changing an unrelated input doesn't silently reset every other
+  # checkbox back to checked (the exact renderUI-reset-loop failure mode
+  # CLAUDE.md documents for the rMATS backbone dropdown).
+  output$confounder_candidate_list_ui <- renderUI({
+    if (is.null(catalog()) || !analysis_ready()) return(NULL)
+    a <- analysis()
+    cs <- a$candidates_summary
+    if (is.null(cs) || is.null(cs$candidates) || nrow(cs$candidates) == 0) return(NULL)
+    cands <- cs$candidates
+    total_ms2 <- cs$target_total_ms2
+
+    header <- tags$tr(
+      tags$th(style = "width:26px;"), tags$th("Candidate"), tags$th("Gene"), tags$th("Mass (Da)"),
+      tags$th("Found via"), tags$th("MS1 colliding peaks"), tags$th("MS2 shared ions (vs. target alone)")
+    )
+    rows <- lapply(seq_len(nrow(cands)), function(r) {
+      cid <- cands$id[r]
+      prev_checked <- isolate(input[[paste0("conf_chk_", sanitize_html_id(cid))]])
+      default_checked <- if (!is.null(prev_checked)) prev_checked else TRUE
+      shared <- if ("n_shared_ms2" %in% names(cands)) cands$n_shared_ms2[r] else NA
+      shared_text <- if (is.na(shared)) "--" else sprintf("%d / %d", shared, total_ms2)
+      gene <- if ("gene_symbol" %in% names(cands)) cands$gene_symbol[r] else NA
+      gene_text <- if (is.na(gene)) "--" else gene
+      tags$tr(
+        tags$td(checkboxInput(paste0("conf_chk_", sanitize_html_id(cid)), NULL, value = default_checked)),
+        tags$td(tags$span(class = "pt-id", cid)),
+        tags$td(gene_text),
+        tags$td(sprintf("%.1f", cands$mass[r])),
+        tags$td(cands$found_via[r] %||% "mass"),
+        tags$td(as.character(cands$n_colliding_peaks[r] %||% 0L)),
+        tags$td(shared_text)
+      )
+    })
+    tagList(
+      p(class = "pt-note", "Every one of these shares mass and/or m/z with the target -- deselect any you have outside evidence (e.g. RNA-seq expression) rules out, then compare only the rest. \"MS2 shared ions\" is a pairwise count (this candidate alone vs. the target, out of the target's own total b/y ion count) -- the multi-way unique/partial/common tiers shown after comparing are computed fresh from whichever candidates you leave checked, not from this number directly."),
+      div(style = "margin-bottom:8px;",
+        actionButton("btn_conf_select_all", "Select all", class = "btn-default btn-sm"),
+        actionButton("btn_conf_select_none", "Select none", class = "btn-default btn-sm")
+      ),
+      div(style = "max-height:340px;overflow:auto;",
+        tags$table(class = "pt-pep-table", tags$thead(header), tags$tbody(rows))
+      ),
+      actionButton("btn_compare_confounders", "Compare selected confounders", class = "btn-success"),
+      textOutput("confounder_comparison_status"),
+      # Un-collapses section 2 as soon as there's real content to show (the
+      # candidate list itself) -- expandCollapsible() would otherwise only
+      # ever run from inside renderSection2, which no longer fires until
+      # AFTER this list exists and the user has clicked "Compare selected
+      # confounders", leaving this list (and the button to get past it)
+      # permanently hidden inside a still-collapsed, still-"(run analysis
+      # to populate)" section.
+      tags$script(HTML("PT.expandCollapsible('s2-collapse-body');"))
+    )
+  })
+
+  observeEvent(input$btn_conf_select_all, {
+    ctx <- confounder_ctx()
+    req(ctx)
+    for (id in names(ctx$conf_pfs)) updateCheckboxInput(session, paste0("conf_chk_", sanitize_html_id(id)), value = TRUE)
+  })
+  observeEvent(input$btn_conf_select_none, {
+    ctx <- confounder_ctx()
+    req(ctx)
+    for (id in names(ctx$conf_pfs)) updateCheckboxInput(session, paste0("conf_chk_", sanitize_html_id(id)), value = FALSE)
+  })
+
+  output$confounder_comparison_status <- renderText({
+    if (is.null(catalog()) || !confounder_comparison_ready()) return("")
+    cc <- confounder_comparison()
+    sprintf("Comparing %d of %d listed confounder(s).", cc$n_selected, cc$n_total)
+  })
+
+  output$viz_script_s2 <- renderUI({
+    if (is.null(catalog()) || !confounder_comparison_ready()) return(NULL)
+    cc <- confounder_comparison()
+    j2 <- jsonlite::toJSON(cc$payload2, auto_unbox = TRUE, digits = 4, null = "null")
+    tags$script(HTML(sprintf("PT.renderSection2(%s);", j2)))
   })
 
   # ============================================================
@@ -843,7 +1172,7 @@ function(input, output, session) {
       if (length(orf_choices) > 0) tagList(
         selectInput("fasta_orf_select", "Use this translation", choices = orf_choices, width = "420px"),
         textInput("fasta_ptm_spec", "PTMs on this translation (optional)",
-                  placeholder = "e.g. 133_Thr_Phospho; 210_Pro_Oxidation,215_Ser_Sulfo", width = "420px")
+                  placeholder = "e.g. 133_T_Phospho; 210_P_Oxidation,215_S_Sulfo", width = "420px")
       ) else tags$p(class = "pt-note", "No ORF candidates to select."),
       hr(),
       h5("2. Known isoform(s) to compare against"),
@@ -1462,6 +1791,8 @@ function(input, output, session) {
     catalog_source(NULL)
     analysis_locked(FALSE)
     analysis_ready(FALSE)
+    confounder_ctx(NULL)
+    confounder_comparison_ready(FALSE)
     updateTextInput(session, "gene_symbol", value = "")
     output$gene_status <- renderText("")
     updateSelectInput(session, "pf_target_select", choices = character(0))

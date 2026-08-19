@@ -20,11 +20,43 @@ read_fasta <- function(path) {
   sequences
 }
 
+#' Full header line for every FASTA entry, in the SAME order read_fasta()
+#' returns its sequences in -- unlike read_fasta()'s own `names()` (just the
+#' first whitespace-delimited token, e.g. "sp|P16070|CD44_HUMAN"), this keeps
+#' the rest of the description line too (e.g. "...GN=CD44 PE=1 SV=2"),
+#' needed for parse_uniprot_gene_symbol() below. Kept as a separate pass
+#' over the file rather than changing read_fasta()'s own return shape,
+#' since every other caller of read_fasta() only ever wants the accession.
+read_fasta_headers <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  sub("^>", "", lines[grep("^>", lines)])
+}
+
 #' Extract the bare UniProt accession from a "sp|ACCESSION|ENTRY_NAME" or
 #' "tr|ACCESSION|ENTRY_NAME" style FASTA header token. Falls back to the
 #' input unchanged if it doesn't match that pattern (e.g. non-UniProt FASTA).
 parse_uniprot_accession <- function(id) {
   ifelse(grepl("^(sp|tr)\\|", id), sub("^(sp|tr)\\|([^|]+)\\|.*$", "\\2", id), id)
+}
+
+#' Extract the gene symbol from a UniProt FASTA header's full description
+#' line (the "GN=" field, e.g. "...OS=Homo sapiens OX=9606 GN=CD44 PE=1
+#' SV=2" -> "CD44") -- used purely for a human-readable column in the
+#' confounding-protein table, NOT for any matching/lookup logic (id stays
+#' the UniProt accession throughout). NA if the header has no GN= field
+#' (a real minority of entries, e.g. some uncharacterized ORFs).
+#'
+#' @param header full FASTA header line (with or without the leading ">"),
+#'   e.g. from read_fasta_headers() -- NOT read_fasta()'s own names(), which
+#'   only keeps the first whitespace token (the accession triplet) and has
+#'   already discarded the GN= field by the time you'd see it there
+#' @return character vector, same length as header, NA where no GN= found
+parse_uniprot_gene_symbol <- function(header) {
+  pos <- regexpr("(?<=GN=)\\S+", header, perl = TRUE)
+  out <- rep(NA_character_, length(header))
+  has_match <- as.vector(pos) != -1
+  out[has_match] <- regmatches(header, pos)
+  out
 }
 
 #' Build the offline reference-proteome mass index.
@@ -46,12 +78,18 @@ build_reference_mass_index <- function(fasta_path, output_path, average = FALSE,
                                         script_path = "python/ptracker_mass.py") {
   init_mass_calculation_engine()
   sequences <- read_fasta(fasta_path)
+  # Same file, same header order as read_fasta()'s own internal parse -- see
+  # read_fasta_headers()'s doc comment for why this can't just reuse
+  # names(sequences) (already stripped down to the bare accession token).
+  headers <- read_fasta_headers(fasta_path)
+  stopifnot(length(headers) == length(sequences))
 
   valid <- grepl(paste0("^[", paste(STANDARD_AA, collapse = ""), "]+$"), toupper(sequences))
   if (any(!valid)) {
     message(sum(!valid), " of ", length(sequences), " entries skipped (non-standard residues)")
   }
   sequences <- sequences[valid]
+  headers <- headers[valid]
 
   mature_sequences <- vapply(sequences, function(s) {
     predict_nterminal_met_excision(s)$mature_sequence
@@ -61,6 +99,7 @@ build_reference_mass_index <- function(fasta_path, output_path, average = FALSE,
 
   index <- data.frame(
     id = parse_uniprot_accession(names(sequences)),
+    gene_symbol = parse_uniprot_gene_symbol(headers),
     sequence = unname(mature_sequences),
     length = nchar(mature_sequences),
     mass = masses,

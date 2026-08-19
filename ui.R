@@ -1,8 +1,22 @@
 fluidPage(
   tags$head(
     tags$style(HTML("
-    .pt-logo { font-size: 30px; font-weight: 700; margin-bottom: 2px; }
-    .pt-tagline { color: #666; margin-bottom: 18px; }
+    @font-face {
+      font-family: 'Plex Mono';
+      font-weight: 500;
+      font-style: normal;
+      src: url('fonts/plex-mono-500.woff2') format('woff2');
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Plex Mono';
+      font-weight: 700;
+      font-style: normal;
+      src: url('fonts/plex-mono-700.woff2') format('woff2');
+      font-display: swap;
+    }
+    .pt-logo { font-family: 'Plex Mono', monospace; font-size: 30px; font-weight: 700; margin-bottom: 2px; letter-spacing: -0.01em; }
+    .pt-tagline { font-family: 'Plex Mono', monospace; font-weight: 500; color: #666; margin-bottom: 18px; }
     .pt-card { border: 1px solid #ddd; border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
     .pt-card.active { border-color: #2a78d6; background: #f4f8fd; }
     .pt-card h4 { margin-top: 0; }
@@ -20,6 +34,27 @@ fluidPage(
     .pt-zoom-controls .pt-zoom-reset { width: auto; padding: 0 8px; font-weight: 400; font-size: 11.5px; }
     .pt-zoom-controls .pt-zoom-range { font-size: 11px; color: #888; margin-left: 4px; }
     #pt-hover-tooltip { position: fixed; z-index: 10000; pointer-events: none; background: #222; color: #fff; font-size: 12px; line-height: 1.4; padding: 6px 9px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.25); max-width: 260px; display: none; }
+    /* Transcript-id sequence popover (hover ENST id in an isoform table to
+       look up residue positions for PTM specs) -- deliberately a SEPARATE
+       element from #pt-hover-tooltip above: that one is pointer-events:none
+       (fine for a quick glance) and only 260px wide, both wrong for
+       something meant to be read carefully and select/copy from. This one
+       accepts pointer events (so moving the mouse INTO it keeps it open
+       instead of it vanishing the instant you leave the trigger) and is
+       wide enough for a monospace sequence block. */
+    .pt-id.pt-seq-hover { cursor: help; border-bottom: 1px dotted #888; }
+    #pt-seq-popover { position: fixed; z-index: 10001; background: #fff; color: #222; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.2); padding: 8px 10px; max-width: 640px; max-height: 420px; overflow: auto; display: none; }
+    #pt-seq-popover .pt-seq-popover-header { font-weight: 600; font-size: 12.5px; margin-bottom: 4px; }
+    #pt-seq-popover pre { margin: 0; font-family: monospace; font-size: 11px; line-height: 1.5; white-space: pre; }
+    /* Collapsible isoform-catalog header (long isoform lists otherwise
+       force scrolling all the way past a list the user is already done
+       picking from, just to reach the results below). Triangle rotates
+       -90deg when collapsed; the summary span shows a running selected-
+       count so collapsing doesn't hide whether a pick actually stuck. */
+    .pt-collapsible-header { cursor: pointer; display: flex; align-items: center; user-select: none; }
+    .pt-collapsible-header:hover .pt-collapse-triangle { color: #2a78d6; }
+    .pt-collapse-triangle { display: inline-block; font-size: 11px; color: #666; transition: transform 0.15s ease; }
+    .pt-collapse-triangle.pt-collapsed { transform: rotate(-90deg); }
     .pt-mode-group { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; }
     .pt-mode-group .radio-inline { font-size: 16px; font-weight: 600; color: #333; margin-right: 24px; }
     .pt-mode-group input[type='radio'] { transform: scale(1.25); margin-right: 8px; vertical-align: middle; }
@@ -32,6 +67,25 @@ fluidPage(
        directly rather than depending on a size class the theme doesn't define. */
     .modal-dialog.modal-xl { width: 95vw; max-width: 1400px; }
     #btn_run_analysis:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* MS1 aggregate stat tiles (clean/overlapping/total charge-state peaks),
+       shown beside the MS1 chart itself (.pt-ms1-with-stats). Per-proteoform
+       MS2 tallies are no longer a separate HTML panel at all -- they're
+       drawn inline inside the ladder SVG next to each row's own title
+       (rowBadgesSvg() in ptracker_viz.js), recomputed live against whichever
+       fragment filter is currently active. */
+    .pt-ms1-with-stats { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .pt-ms1-main { flex: 1 1 420px; min-width: 0; }
+    .pt-stats-strip { flex: 0 0 190px; display: flex; flex-direction: column; gap: 8px; }
+    .pt-stat-group-title { font-family: 'Plex Mono', monospace; font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
+    .pt-stat-tile { border: 1px solid #e2e2e2; border-radius: 8px; padding: 6px 10px; display: flex; align-items: center; gap: 8px; background: #fff; }
+    .pt-stat-icon { font-size: 14px; width: 16px; text-align: center; flex-shrink: 0; display: inline-block; }
+    .pt-stat-value { font-family: 'Plex Mono', monospace; font-weight: 700; font-size: 15px; line-height: 1.1; color: #222; }
+    .pt-stat-label { font-size: 10.5px; color: #777; line-height: 1.2; }
+    /* Visual separation between the MS1 overlay and the MS2 fragment-ladder
+       section below it, so the two panels read as distinct rather than one
+       continuous stack. */
+    .pt-viz-section-heading { font-family: 'Plex Mono', monospace; font-size: 12.5px; font-weight: 700; color: #444; text-transform: uppercase; letter-spacing: 0.03em; margin: 18px 0 6px 0; padding-top: 14px; border-top: 1px solid #eee; }
+    .pt-viz-section-heading:first-child { margin-top: 4px; padding-top: 0; border-top: none; }
     .pt-mode-group label.pt-disabled-label { opacity: 0.45; cursor: not-allowed; }
     #btn_load_gene:disabled, #btn_run_fasta:disabled, #btn_run_rmats:disabled,
     #btn_set_ms_strategy:disabled, #btn_set_ms_resolution:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -39,8 +93,54 @@ fluidPage(
     tags$script(src = paste0("ptracker_viz.js?v=", as.integer(file.mtime("www/ptracker_viz.js"))))
   ),
 
-  div(class = "pt-logo", "ProteoformTracker"),
-  div(class = "pt-tagline", "Planning tool for isoform/proteoform-level detectability in top-down and middle-down proteomics"),
+  div(style = "display:flex; align-items:center; gap:14px; margin-bottom:18px;",
+    HTML(r"(<svg width="180" height="100" viewBox="36 118 409 228" role="img" aria-label="ProteoformTracker icon">
+<rect x="56" y="181" width="36" height="36" rx="4" fill="#1f9c86"/>
+<rect x="112" y="181" width="40" height="36" rx="4" fill="#1f9c86"/>
+<rect x="172" y="181" width="36" height="36" rx="4" fill="#1f9c86"/>
+<rect x="228" y="181" width="30" height="36" rx="4" fill="#1f9c86"/>
+<line x1="74" y1="181" x2="74" y2="156" stroke="#ffd23f" stroke-width="4" stroke-linecap="round"/>
+<circle cx="74" cy="149" r="11" fill="#ffd23f" stroke="#17332e" stroke-width="2.5"/>
+<rect x="56" y="281" width="36" height="36" rx="4" fill="#ff6b4a"/>
+<rect x="112" y="281" width="40" height="36" rx="4" fill="#ff6b4a"/>
+<rect x="172" y="281" width="36" height="36" rx="4" fill="none" stroke="#b0b0b0" stroke-width="2" stroke-dasharray="4,4"/>
+<rect x="228" y="281" width="30" height="36" rx="4" fill="#ff6b4a"/>
+<path d="M300,273 C314,273 326,183 340,183 C354,183 366,273 380,273 Z" fill="#1f9c86" fill-opacity="0.8"/>
+<path d="M345,273 C359,273 371,193 385,193 C399,193 411,273 425,273 Z" fill="#ff6b4a" fill-opacity="0.8"/>
+<g stroke-linecap="round">
+  <g stroke-width="3.5">
+    <line x1="305" y1="288" x2="305" y2="298" stroke="#8a8a8a"/>
+    <line x1="314" y1="288" x2="314" y2="303" stroke="#8a8a8a"/>
+    <line x1="323" y1="288" x2="323" y2="300" stroke="#1f9c86"/>
+    <line x1="332" y1="288" x2="332" y2="296" stroke="#8a8a8a"/>
+    <line x1="350" y1="288" x2="350" y2="299" stroke="#8a8a8a"/>
+    <line x1="359" y1="288" x2="359" y2="304" stroke="#8a8a8a"/>
+    <line x1="368" y1="288" x2="368" y2="297" stroke="#1f9c86"/>
+    <line x1="377" y1="288" x2="377" y2="301" stroke="#8a8a8a"/>
+    <line x1="395" y1="288" x2="395" y2="298" stroke="#8a8a8a"/>
+    <line x1="404" y1="288" x2="404" y2="302" stroke="#8a8a8a"/>
+    <line x1="413" y1="288" x2="413" y2="299" stroke="#1f9c86"/>
+  </g>
+  <g stroke-width="3.5">
+    <line x1="305" y1="310" x2="305" y2="320" stroke="#8a8a8a"/>
+    <line x1="314" y1="310" x2="314" y2="325" stroke="#8a8a8a"/>
+    <line x1="332" y1="310" x2="332" y2="318" stroke="#8a8a8a"/>
+    <line x1="341" y1="310" x2="341" y2="324" stroke="#ff6b4a"/>
+    <line x1="350" y1="310" x2="350" y2="321" stroke="#8a8a8a"/>
+    <line x1="359" y1="310" x2="359" y2="326" stroke="#8a8a8a"/>
+    <line x1="377" y1="310" x2="377" y2="323" stroke="#8a8a8a"/>
+    <line x1="386" y1="310" x2="386" y2="322" stroke="#ff6b4a"/>
+    <line x1="395" y1="310" x2="395" y2="320" stroke="#8a8a8a"/>
+    <line x1="404" y1="310" x2="404" y2="324" stroke="#8a8a8a"/>
+  </g>
+</g>
+</svg>)"),
+    div(
+      div(class = "pt-logo", style = "margin-bottom: 0;", "ProteoformTracker"),
+      div(class = "pt-tagline", style = "margin-bottom: 0; font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase;",
+          "Detectability planning for top/middle-down proteomics")
+    )
+  ),
 
   div(class = "pt-settings",
     fluidRow(
@@ -82,6 +182,16 @@ fluidPage(
       column(3, numericInput("ms_mz_ref", "Reference m/z", value = 200, min = 50, step = 10)),
       column(3, numericInput("ms_safety_margin", "Safety margin (x FWHM)", value = 1.75, min = 1, max = 5, step = 0.05)),
       column(3, selectInput("ms_mode", "Ionization mode", choices = c("Denatured" = "denatured", "Native" = "native")))
+    ),
+    fluidRow(
+      column(12, radioButtons("scoring_mode", "Fragmentation scoring mode", inline = TRUE,
+        choices = c(
+          "Calibrated (length-aware)" = "glm",
+          "RF ranking (no length -- for long proteoforms)" = "rf"
+        ),
+        selected = "glm"
+      ),
+      p(class = "pt-note", "Calibrated mode is the primary, auditable scoring formula, but a single long proteoform's own length can suppress every one of its bonds below the tier thresholds. RF ranking mode drops length entirely so long proteoforms can still be usefully tier-filtered and isotope-inspected -- it's a relative ranking within one proteoform, not a calibrated absolute score, and isn't comparable in magnitude to the calibrated mode's numbers."))
     )
   ),
 
@@ -120,9 +230,15 @@ fluidPage(
       ),
       textOutput("gene_status"),
       hr(),
-      h5("Isoform catalog (real Ensembl transcripts for this gene)"),
-      uiOutput("isoform_catalog_ui"),
-      uiOutput("ptm_warnings_ui"),
+      tags$div(id = "isoform-catalog-toggle", class = "pt-collapsible-header",
+        tags$span(id = "isoform-catalog-triangle", class = "pt-collapse-triangle", HTML("&#9660;")),
+        h5(style = "display:inline; margin:0 0 0 6px;", "Isoform catalog (real Ensembl transcripts for this gene)"),
+        tags$span(id = "isoform-catalog-summary", class = "pt-note", style = "margin-left:10px;")
+      ),
+      tags$div(id = "isoform-catalog-collapse-body",
+        uiOutput("isoform_catalog_ui"),
+        uiOutput("ptm_warnings_ui")
+      ),
       hr(),
       h5("Result proteoform table"),
       p(class = "pt-note", "Every checked isoform (plus its parsed PTM combinations) is included in the comparison below. Pick one as the confounder-search target:"),
@@ -140,23 +256,63 @@ fluidPage(
       textOutput("stale_notice"),
       uiOutput("viz_script"),
       hr(),
-      h5("1. Relevant-proteoform comparison"),
-      p(class = "pt-note", "MS1 charge-envelope overlay, then the MS2 fragment ladder aligned on a shared exon axis. Scroll/pinch or use the +/- buttons to zoom, drag to pan. Hover a b/y tick once zoomed in enough to inspect it."),
-      tags$svg(id = "s1-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
-      div(id = "s1-legend"),
-      div(id = "s1-filters"),
-      div(id = "s1-zoom"),
-      tags$svg(id = "s1-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
-      div(id = "s1-info", class = "pt-info-box"),
+      tags$div(id = "s1-toggle", class = "pt-collapsible-header", `data-collapse-target` = "s1-collapse-body",
+        tags$span(class = "pt-collapse-triangle pt-collapsed", HTML("&#9660;")),
+        h5(style = "display:inline; margin:0 0 0 6px;", "1. Relevant-proteoform comparison"),
+        tags$span(id = "s1-collapse-hint", class = "pt-note", style = "margin-left:10px;", "(run analysis to populate)")
+      ),
+      tags$div(id = "s1-collapse-body", style = "display:none;",
+        div(class = "pt-viz-section-heading", "MS1 charge-envelope overlay"),
+        p(class = "pt-note", "Scroll/pinch or use the +/- buttons to zoom, drag to pan -- individual isotope peaks are only visible once zoomed into a single charge state's own narrow m/z window; a smooth envelope is shown where the instrument wouldn't resolve them."),
+        tags$div(class = "pt-ms1-with-stats",
+          tags$div(class = "pt-ms1-main",
+            tags$svg(id = "s1-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+            div(id = "s1-ms1-zoom")
+          ),
+          tags$div(id = "s1-stats-strip", class = "pt-stats-strip")
+        ),
+        div(class = "pt-viz-section-heading", "MS2 fragment ladder"),
+        p(class = "pt-note", "Aligned on a shared exon axis. Scroll/pinch or use the +/- buttons to zoom, drag to pan. Hover a b/y tick once zoomed in enough to inspect it; the unique/partial/common counts next to each proteoform's title update live as you change the filter below."),
+        div(id = "s1-legend"),
+        div(id = "s1-filters"),
+        div(id = "s1-zoom"),
+        tags$svg(id = "s1-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
+        div(id = "s1-info", class = "pt-info-box"),
+        p(class = "pt-note", "Click a b/y tick above (Elevated/High/Very high filter -- propensity score>1) to see that specific fragment ion's own isotope peaks below, overlaid across every checked proteoform that has a qualifying fragment at the same aligned position -- the same resolved-vs-overlapping question the MS1 chart above answers for the intact protein, answered here for one fragment ion at a time."),
+        div(id = "s1-frag-label", class = "pt-note", style = "font-weight:600;"),
+        tags$svg(id = "s1-frag-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+        div(id = "s1-frag-ms1-zoom")
+      ),
       hr(),
-      h5("2. Confounding-protein search (single target)"),
-      textOutput("confounder_status"),
-      tags$svg(id = "s2-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
-      div(id = "s2-legend"),
-      div(id = "s2-filters"),
-      div(id = "s2-zoom"),
-      tags$svg(id = "s2-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
-      div(id = "s2-info", class = "pt-info-box")
+      tags$div(id = "s2-toggle", class = "pt-collapsible-header", `data-collapse-target` = "s2-collapse-body",
+        tags$span(class = "pt-collapse-triangle pt-collapsed", HTML("&#9660;")),
+        h5(style = "display:inline; margin:0 0 0 6px;", "2. Confounding-protein search (single target)"),
+        tags$span(id = "s2-collapse-hint", class = "pt-note", style = "margin-left:10px;", "(run analysis to populate)")
+      ),
+      tags$div(id = "s2-collapse-body", style = "display:none;",
+        uiOutput("confounder_status"),
+        uiOutput("confounder_candidate_list_ui"),
+        hr(),
+        uiOutput("viz_script_s2"),
+        div(class = "pt-viz-section-heading", "MS1 charge-envelope overlay"),
+        tags$div(class = "pt-ms1-with-stats",
+          tags$div(class = "pt-ms1-main",
+            tags$svg(id = "s2-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+            div(id = "s2-ms1-zoom")
+          ),
+          tags$div(id = "s2-stats-strip", class = "pt-stats-strip")
+        ),
+        div(id = "s2-legend"),
+        div(class = "pt-viz-section-heading", "MS2 fragment ladder"),
+        div(id = "s2-filters"),
+        div(id = "s2-zoom"),
+        tags$svg(id = "s2-ladder", class = "pt-viz", viewBox = "0 0 640 40"),
+        div(id = "s2-info", class = "pt-info-box"),
+        p(class = "pt-note", "Click a b/y tick above (propensity score>1) to see that fragment ion's own isotope peaks below."),
+        div(id = "s2-frag-label", class = "pt-note", style = "font-weight:600;"),
+        tags$svg(id = "s2-frag-ms1", class = "pt-viz", viewBox = "0 0 640 130"),
+        div(id = "s2-frag-ms1-zoom")
+      )
     )
   ),
 

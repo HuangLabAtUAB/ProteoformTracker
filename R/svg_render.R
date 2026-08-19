@@ -20,16 +20,26 @@
 #'
 #' @param pf_list named list of proteoform objects (id -> proteoform)
 #' @param r_ref,mz_ref,safety_margin passed through to fragment_mass_collision_check()
+#' @param scoring_mode "glm" (default, calibrated + length-aware) or "rf"
+#'   (length-free ranking mode, see R/fragmentation_propensity_rf.R -- use
+#'   when a proteoform's own length is suppressing every bond below the
+#'   GLM's tier thresholds and within-proteoform ranking is what's needed)
 #' @return named list, id -> list(ladder, tier_b, tier_y) where tier_b/tier_y
 #'   are character vectors ("common"/"partial"/"unique"/"neutral"), one per
 #'   cleavage position
-compute_ladder_tiers <- function(pf_list, r_ref = 120000, mz_ref = 200, safety_margin = DEFAULT_SAFETY_MARGIN, mode = "denatured") {
+compute_ladder_tiers <- function(pf_list, r_ref = 120000, mz_ref = 200, safety_margin = DEFAULT_SAFETY_MARGIN,
+                                  mode = "denatured", scoring_mode = c("glm", "rf")) {
+  scoring_mode <- match.arg(scoring_mode)
   ids <- names(pf_list)
   result <- list()
   for (id in ids) {
     others <- pf_list[setdiff(ids, id)]
     ladder <- generate_fragment_ladder(pf_list[[id]])
-    prop <- fragmentation_propensity(pf_list[[id]], mode = mode, method = "HCD")$propensity_score
+    prop <- if (scoring_mode == "rf") {
+      fragmentation_propensity_rf(pf_list[[id]])$propensity_score
+    } else {
+      fragmentation_propensity(pf_list[[id]], mode = mode, method = "HCD")$propensity_score
+    }
     n_bonds <- length(ladder$b_mass)
     if (length(others) == 0) {
       result[[id]] <- list(ladder = ladder, propensity = prop, tier_b = rep("neutral", n_bonds), tier_y = rep("neutral", n_bonds))
@@ -52,11 +62,18 @@ compute_ladder_tiers <- function(pf_list, r_ref = 120000, mz_ref = 200, safety_m
 #' @param target_pf proteoform object (the confounder-search target)
 #' @param confounder_pfs named list of proteoform objects (real confounders,
 #'   from build_confounder_proteoforms())
+#' @param scoring_mode "glm" or "rf" -- see compute_ladder_tiers()
 #' @return list(ladder, propensity, tier_b, tier_y) for the target
 compute_confounder_tiers <- function(target_pf, confounder_pfs, r_ref = 120000, mz_ref = 200,
-                                      safety_margin = DEFAULT_SAFETY_MARGIN, mode = "denatured") {
+                                      safety_margin = DEFAULT_SAFETY_MARGIN, mode = "denatured",
+                                      scoring_mode = c("glm", "rf")) {
+  scoring_mode <- match.arg(scoring_mode)
   ladder <- generate_fragment_ladder(target_pf)
-  prop <- fragmentation_propensity(target_pf, mode = mode, method = "HCD")$propensity_score
+  prop <- if (scoring_mode == "rf") {
+    fragmentation_propensity_rf(target_pf)$propensity_score
+  } else {
+    fragmentation_propensity(target_pf, mode = mode, method = "HCD")$propensity_score
+  }
   n_bonds <- length(ladder$b_mass)
   if (length(confounder_pfs) == 0) {
     return(list(ladder = ladder, propensity = prop, tier_b = rep("neutral", n_bonds), tier_y = rep("neutral", n_bonds)))
@@ -67,6 +84,41 @@ compute_confounder_tiers <- function(target_pf, confounder_pfs, r_ref = 120000, 
   match_y <- Reduce(`+`, lapply(cc$per_candidate, function(d) as.integer(d$matched[d$ion_type == "y"])))
   tier_of <- function(mc) ifelse(mc == n_others, "common", ifelse(mc == 0, "unique", "partial"))
   list(ladder = ladder, propensity = prop, tier_b = tier_of(match_b), tier_y = tier_of(match_y))
+}
+
+#' Cheap (no isotope-pattern) PAIRWISE MS2 fragment-ion overlap between the
+#' target and EACH confounder candidate independently -- one number per
+#' candidate, target vs. that candidate alone, regardless of any other
+#' candidate. Used at the confounder-SEARCH step (server.R) to help the
+#' user decide which candidates are worth including in the full multi-way
+#' comparison BEFORE paying the isotope-envelope cost of "Compare selected
+#' confounders": fragment_mass_collision_check() only needs each candidate's
+#' own deterministic fragment ladder (arithmetic + one batched pyteomics
+#' call per candidate), not an isotope pattern, so this is affordable for
+#' the whole candidate list up front.
+#'
+#' Deliberately NOT the same number as compute_confounder_tiers()'s
+#' "unique"/"common" tiers: those are inherently SET-dependent (a fragment
+#' only counts as "unique" if NO confounder in the currently-selected set
+#' collides with it), so they can't be known until the user has actually
+#' picked which confounders to compare against. This is just "does THIS one
+#' candidate, alone, share a fragment with the target" -- a simpler,
+#' selection-independent number that's still useful for spotting which
+#' candidates barely overlap the target at MS2 (safe to deselect if you
+#' want a smaller comparison) vs. which ones matter most.
+#'
+#' @param target_pf proteoform object
+#' @param candidate_pfs named list of candidate proteoform objects
+#' @param r_ref,mz_ref,safety_margin passed to fragment_mass_collision_check()
+#' @return named integer vector, candidate id -> number of the target's b/y
+#'   ions (out of 2*(n-1) total) that collide with this ONE candidate's own ladder
+confounder_ms2_overlap_counts <- function(target_pf, candidate_pfs, r_ref = 120000, mz_ref = 200,
+                                           safety_margin = DEFAULT_SAFETY_MARGIN) {
+  if (length(candidate_pfs) == 0) return(integer(0))
+  cc <- fragment_mass_collision_check(target_pf, candidate_pfs, r_ref = r_ref, mz_ref = mz_ref, safety_margin = safety_margin)
+  counts <- vapply(cc$per_candidate, function(d) sum(d$matched), integer(1))
+  names(counts) <- names(candidate_pfs)
+  counts
 }
 
 #' Render an MS1 charge-state envelope overlay as a static SVG (one stick

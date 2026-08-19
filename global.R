@@ -17,6 +17,7 @@ source("R/ms1_scoring.R")
 source("R/mz_collision_index.R")
 source("R/fragment_ladder.R")
 source("R/fragmentation_propensity.R")
+source("R/fragmentation_propensity_rf.R")
 source("R/fragment_collision.R")
 source("R/reference_exon_index.R")
 
@@ -64,5 +65,25 @@ reference_exon_index <- if (file.exists(reference_exon_index_path)) {
   load_reference_exon_index(reference_exon_index_path)
 } else {
   message("No exon index found -- run scripts/build_exon_index.R to enable exon-track lookups by gene/transcript.")
+  NULL
+}
+
+# Optional secondary scoring mode: a length-free RF ranking model (see
+# scripts/build_propensity_rf_model.R for why this exists alongside the
+# primary calibrated GLM formula in R/fragmentation_propensity.R). Loaded
+# once at startup; NULL (with the app falling back to GLM-only) if not
+# built yet -- `ranger` itself is only required if this file is present.
+propensity_rf_model_path <- "data/fragmentation_propensity_rf.rds"
+propensity_rf_model <- if (file.exists(propensity_rf_model_path)) {
+  if (requireNamespace("ranger", quietly = TRUE)) {
+    readRDS(propensity_rf_model_path)
+  } else {
+    message("data/fragmentation_propensity_rf.rds found but the 'ranger' package isn't installed -- ",
+            "install.packages('ranger') to enable the RF ranking scoring mode.")
+    NULL
+  }
+} else {
+  message("No RF ranking model found -- run scripts/build_propensity_rf_model.R to enable the ",
+          "'RF ranking (no length)' scoring mode.")
   NULL
 }

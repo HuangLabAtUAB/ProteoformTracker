@@ -4,6 +4,50 @@
 
 .IDENTITY_PALETTE_R <- c("#1f8a70", "#d9730d", "#5b6470", "#7a5cff", "#2a9d8f", "#e07a5f", "#3d5a80")
 
+#' Tally MS2 fragment-ion tiers (common/partial/unique/neutral) across
+#' both ion series for the stat-tile summary panel. "Informative" here
+#' means "unique" specifically -- a fragment mass no OTHER checked
+#' proteoform/confounder shares, i.e. one that on its own would confirm
+#' this proteoform's identity if observed. "partial" bonds are shared with
+#' SOME but not all others, so they're not double-counted as either
+#' fully-informative or fully-uninformative.
+#'
+#' @param tier_b,tier_y character vectors ("common"/"partial"/"unique"/"neutral")
+#' @return list(total, unique, partial, common, neutral)
+tally_ms2_tiers <- function(tier_b, tier_y) {
+  all_tiers <- c(tier_b, tier_y)
+  list(
+    total = length(all_tiers),
+    unique = sum(all_tiers == "unique"),
+    partial = sum(all_tiers == "partial"),
+    common = sum(all_tiers == "common"),
+    neutral = sum(all_tiers == "neutral")
+  )
+}
+
+#' Converts predict_ms1_peaks()'s R-native output (R/isotope_envelope.R)
+#' into the nested list-of-lists shape jsonlite::toJSON(auto_unbox = TRUE)
+#' needs for the MS1 chart: one entry per populated charge state, each
+#' carrying its own array of {mz, rel} points -- either the real discrete
+#' isotope comb (resolved = TRUE) or a handful of samples along a smooth
+#' envelope curve (resolved = FALSE), decided per charge state against the
+#' instrument's own resolving power. See predict_ms1_peaks()'s doc comment
+#' for the physics.
+#'
+#' @param ms1_peaks output of predict_ms1_peaks()
+#' @return list of list(z=, resolved=, points = list(list(mz=, rel=), ...))
+ms1_peaks_json <- function(ms1_peaks) {
+  lapply(ms1_peaks$charge_states, function(cs) {
+    list(
+      z = cs$z,
+      resolved = cs$resolved,
+      points = Map(function(mz, rel) list(mz = round(mz, 4), rel = round(rel, 4)),
+                    cs$points$mz, cs$points$rel)
+    )
+  })
+}
+
+
 #' Build the JSON-ready payload for section 1 (relevant-proteoform
 #' comparison): one entry per checked proteoform, each with its own ladder,
 #' propensity, tier colors, PTM markers, and its mapping onto the shared
@@ -23,8 +67,16 @@
 #'   its parent transcript's shared axis before lookup). exon_blocks are left
 #'   alone -- axis space is shared across the whole transcript regardless of
 #'   which sub-range of it any one row happens to display.
+#' @param scoring_mode "glm" or "rf" -- which scoring mode produced `tiers`
+#'   (see compute_ladder_tiers()); sent through so the client knows which
+#'   tier thresholds apply (www/ptracker_viz.js, RF_TIER_THRESHOLDS_JS-style
+#'   constants -- the two modes are NOT on the same numeric scale).
+#' @param ms1_stats optional list(total_peaks, crowded_peaks, clean_peaks)
+#'   from envelope_crowding_check() (server.R), for the stat-tile panel;
+#'   NULL if not computed (e.g. fewer than 2 proteoforms checked)
 #' @return list ready for jsonlite::toJSON(auto_unbox = TRUE)
-build_section1_payload <- function(pf_list, iso_key_of, masses, tiers, exon_table, residue_offset = list()) {
+build_section1_payload <- function(pf_list, iso_key_of, masses, tiers, exon_table, residue_offset = list(),
+                                    scoring_mode = "glm", ms1_stats = NULL) {
   ids <- names(pf_list)
   unique_iso_keys <- unique(iso_key_of[ids])
   axis <- if (!is.null(exon_table) && length(unique_iso_keys) > 0) {
@@ -66,13 +118,16 @@ build_section1_payload <- function(pf_list, iso_key_of, masses, tiers, exon_tabl
       axis_pos = axis_pos,
       exon_blocks = exon_blocks,
       tier_b = tt$tier_b,
-      tier_y = tt$tier_y
+      tier_y = tt$tier_y,
+      ms2_stats = tally_ms2_tiers(tt$tier_b, tt$tier_y)
     )
   })
 
   list(
     proteoforms = proteoforms,
-    axis_length = if (!is.null(axis)) axis$axis_length else max(vapply(pf_list, function(p) nchar(p$sequence), integer(1)))
+    axis_length = if (!is.null(axis)) axis$axis_length else max(vapply(pf_list, function(p) nchar(p$sequence), integer(1))),
+    scoring_mode = scoring_mode,
+    ms1_stats = ms1_stats
   )
 }
 
@@ -86,11 +141,16 @@ build_section1_payload <- function(pf_list, iso_key_of, masses, tiers, exon_tabl
 #' @param target_exon_table this transcript's own exon rows (single
 #'   transcript, no cross-transcript alignment needed)
 #' @param confounder_search result of search_confounding_proteins_real()
-#' @param confounder_envs named list, confounder id -> data.frame(z, mz,
-#'   relative_intensity)
+#' @param confounder_envs named list, confounder id -> predict_ms1_peaks()
+#'   output (R/isotope_envelope.R)
+#' @param scoring_mode "glm" or "rf" -- see build_section1_payload()
+#' @param ms1_stats optional list(total_peaks, colliding_peaks, clean_peaks)
+#'   -- how many of the TARGET's own charge-state peaks collide with at
+#'   least one real confounder, from confounder_search$mz_collision_detail
+#'   (server.R); NULL if not computed
 #' @return list ready for jsonlite::toJSON(auto_unbox = TRUE)
 build_section2_payload <- function(target_pf, target_mass, target_tiers, target_exon_table,
-                                    confounder_search, confounder_envs) {
+                                    confounder_search, confounder_envs, scoring_mode = "glm", ms1_stats = NULL) {
   exon_blocks <- if (!is.null(target_exon_table) && nrow(target_exon_table) > 0) {
     te <- target_exon_table[order(target_exon_table$residue_start), ]
     lapply(seq_len(nrow(te)), function(r) list(start = te$residue_start[r], end = te$residue_end[r]))
@@ -104,8 +164,9 @@ build_section2_payload <- function(target_pf, target_mass, target_tiers, target_
       env <- confounder_envs[[cid]]
       list(
         id = cid, mass = round(cands$mass[r], 2), length = cands$length[r],
-        env = if (!is.null(env)) Map(function(z, mz, ri) list(z = z, mz = round(mz, 2), rel = round(ri, 4)),
-                                      env$z, env$mz, env$relative_intensity) else list()
+        found_via = cands$found_via[r] %||% "mass",
+        n_colliding_peaks = cands$n_colliding_peaks[r] %||% 0L,
+        env = if (!is.null(env)) ms1_peaks_json(env) else list()
       )
     })
   }
@@ -120,10 +181,14 @@ build_section2_payload <- function(target_pf, target_mass, target_tiers, target_
       propensity = round(target_tiers$propensity, 2),
       exon_blocks = exon_blocks,
       tier_b = target_tiers$tier_b,
-      tier_y = target_tiers$tier_y
+      tier_y = target_tiers$tier_y,
+      ms2_stats = tally_ms2_tiers(target_tiers$tier_b, target_tiers$tier_y)
     ),
     confounders = confounders,
     window_da = if (!is.null(confounder_search)) round(confounder_search$window_da, 3) else NA,
-    best_charge_state = if (!is.null(confounder_search)) confounder_search$best_charge_state else NA
+    best_charge_state = if (!is.null(confounder_search)) confounder_search$best_charge_state else NA,
+    scoring_mode = scoring_mode,
+    ms1_stats = ms1_stats,
+    n_candidates_before_cap = if (!is.null(confounder_search)) confounder_search$n_candidates_before_cap %||% length(confounders) else NA
   )
 }

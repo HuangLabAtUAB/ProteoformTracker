@@ -6,3 +6,10 @@ pyteomics<5.0
 # reticulate declares its own internal numpy preference on load; installing
 # it here just keeps that check quiet, we don't use numpy directly.
 numpy
+
+# Exact isotope-pattern calculation (R/isotope_envelope.R), replacing the
+# earlier Averagine-based approximation now that every caller has a real
+# sequence to compute the exact elemental composition from. Ships prebuilt
+# wheels for common platforms (verified: macOS arm64, Python 3.9) -- no
+# C++ compiler needed.
+IsoSpecPy

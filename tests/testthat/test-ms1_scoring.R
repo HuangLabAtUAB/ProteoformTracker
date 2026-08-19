@@ -37,7 +37,7 @@ test_that("ms1_resolvability flags envelope_interleave_risk when Delta-mass is s
   seq <- test_proteoform_sequence()
   target <- proteoform(id = "target", sequence = seq, provenance = "manual")
   target_mass <- proteoform_mass(target)$mass
-  isotope_fwhm <- averagine_isotope_envelope(target_mass)$fwhm
+  isotope_fwhm <- isotope_envelope_stats(proteoform_isotope_pattern(target))$fwhm
 
   make_candidate <- function(id, delta) {
     proteoform(

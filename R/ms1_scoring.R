@@ -27,16 +27,19 @@ DEFAULT_SAFETY_MARGIN <- 1.75 # spec recommends 1.5-2x over DeltaM_FWHM
 #' Separately (per the design spec) flags `envelope_interleave_risk`: above
 #' ~25-30 kDa, isotope envelopes themselves widen enough that even a
 #' perfectly resolving instrument may not cleanly separate close
-#' proteoforms. This is computed, not a hardcoded mass cutoff -- via
-#' averagine_isotope_envelope() (R/isotope_envelope.R), risk is flagged
-#' whenever the pair's actual Δmass is smaller than the width of the
-#' isotope envelope itself: even though each individual isotope peak may be
-#' instrumentally well-resolved, the two proteoforms' isotope combs overlap
-#' peak-for-peak across most of their span, so a given peak can't be
-#' unambiguously assigned to one proteoform vs the other. This can trip at
-#' masses below 25-30 kDa for small-Δmass pairs, and not trip above it for
-#' large-Δmass pairs -- consistent with the spec's caveat but not reducible
-#' to a single mass threshold.
+#' proteoforms. This is computed, not a hardcoded mass cutoff -- via the
+#' target's own real, exact-composition isotope pattern
+#' (proteoform_isotope_pattern(), R/mass_calculation.R, summarized by
+#' isotope_envelope_stats(), R/isotope_envelope.R -- NOT the Averagine
+#' approximation this used to call, now that the target's real sequence is
+#' right there), risk is flagged whenever the pair's actual Δmass is smaller
+#' than the width of the isotope envelope itself: even though each
+#' individual isotope peak may be instrumentally well-resolved, the two
+#' proteoforms' isotope combs overlap peak-for-peak across most of their
+#' span, so a given peak can't be unambiguously assigned to one proteoform
+#' vs the other. This can trip at masses below 25-30 kDa for small-Δmass
+#' pairs, and not trip above it for large-Δmass pairs -- consistent with the
+#' spec's caveat but not reducible to a single mass threshold.
 #'
 #' @param target,candidate proteoform objects (see proteoform_schema.R)
 #' @param mode "denatured" or "native"
@@ -72,7 +75,7 @@ ms1_resolvability <- function(target, candidate, mode = c("denatured", "native")
     "not-resolvable"
   }
 
-  isotope_envelope <- averagine_isotope_envelope(target_mass)
+  isotope_envelope <- isotope_envelope_stats(proteoform_isotope_pattern(target, average = average))
 
   list(
     target_id = target$id,
