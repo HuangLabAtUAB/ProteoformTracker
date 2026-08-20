@@ -16,6 +16,14 @@ renv/staging/
 # Data caches / large downloads (regenerated, not committed)
 /data/*
 !/data/.gitkeep
+# Exception: the RF fragmentation-scoring model ships committed rather than
+# regenerated, unlike every other file under data/. Its build script
+# (scripts/build_propensity_rf_model.R, itself gitignored below) reads from
+# scratch intermediate feature caches that were never committed either, so
+# there is currently no way to rebuild this file from a fresh clone -- see
+# CLAUDE.md. Without it, RF mode (the default scoring mode) fails with
+# "RF ranking mode unavailable" for anyone who clones the repo.
+!/data/fragmentation_propensity_rf.rds
 
 # One-off model-calibration exploration scripts and their cached outputs
 # (scratch work, not part of the deployed app or reproducible standalone)
