@@ -68,6 +68,20 @@ reference_exon_index <- if (file.exists(reference_exon_index_path)) {
   NULL
 }
 
+# Calibrated (GLM) scoring mode's model -- a single joint logistic
+# regression (see scripts/build_propensity_glm_model.R for why this is a
+# load-once-and-predict() model file rather than hand-written constants).
+# Loaded once at startup; NULL (with Calibrated mode unavailable, same
+# "mode unavailable" pattern the RF model below already uses) if not built.
+propensity_glm_model_path <- "data/fragmentation_propensity_glm.rds"
+propensity_glm_model <- if (file.exists(propensity_glm_model_path)) {
+  readRDS(propensity_glm_model_path)
+} else {
+  message("No calibrated (GLM) propensity model found -- run scripts/build_propensity_glm_model.R ",
+          "to enable the 'Calibrated (length-aware)' scoring mode.")
+  NULL
+}
+
 # Optional secondary scoring mode: a length-free RF ranking model (see
 # scripts/build_propensity_rf_model.R for why this exists alongside the
 # primary calibrated GLM formula in R/fragmentation_propensity.R). Loaded

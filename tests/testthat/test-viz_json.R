@@ -18,7 +18,7 @@ test_that("tally_ms2_tiers handles the single-checked-proteoform (all-neutral) c
 })
 
 test_that("propensity_group applies the GLM thresholds (elevated: >, high: >=), no Very high tier", {
-  scores <- c(0.5, 1.2, 1.200001, 4, 9.999, 10)
+  scores <- c(0.05, 0.10, 0.100001, 0.20, 0.5, 0.9)
   expect_equal(
     propensity_group(scores, "glm"),
     c("Baseline", "Baseline", "Elevated", "High", "High", "High")
@@ -92,7 +92,7 @@ test_that("flatten_section1_peaks produces one row per MS1 point and per MS2 bon
     proteoforms = list(list(
       id = "PF1", label = "PF1", transcript_id = "ENST00001", mass = 1000.1, len = 6,
       env = list(list(z = 10L, resolved = TRUE, points = list(list(mz = 500.1, rel = 1.0), list(mz = 500.2, rel = 0.8)))),
-      b_mass = c(100.1, 200.2), y_mass = c(90.1, 190.2), propensity = c(0.5, 2.0),
+      b_mass = c(100.1, 200.2), y_mass = c(90.1, 190.2), propensity = c(0.05, 0.15),
       tier_b = c("unique", "common"), tier_y = c("common", "unique")
     ))
   )
@@ -106,7 +106,7 @@ test_that("flatten_section1_peaks produces one row per MS1 point and per MS2 bon
 
   ms2 <- df[df$peak_type == "MS2", ]
   expect_setequal(ms2$ion_type, c("b", "y"))
-  # position-1 bond had propensity 0.5 -> Baseline in GLM mode; position-2 had 2.0 -> Elevated
+  # position-1 bond had propensity 0.05 -> Baseline in GLM mode; position-2 had 0.15 -> Elevated
   expect_equal(ms2$propensity_group[ms2$position == 1][1], "Baseline")
   expect_equal(ms2$propensity_group[ms2$position == 2][1], "Elevated")
 })

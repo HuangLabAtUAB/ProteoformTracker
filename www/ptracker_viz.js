@@ -29,31 +29,33 @@ window.PT = (function () {
   // one highlight (MXE has two: its 1st and 2nd mutually exclusive exons).
   const HIGHLIGHT_COLORS = ["#111111", "#0b5fff", "#c0392b", "#0ca35c"];
   // Tier cutpoints, calibrated separately per scoring mode -- the two
-  // modes are NOT on the same numeric scale (see R/fragmentation_
-  // propensity.R vs R/fragmentation_propensity_rf.R) and must never share
-  // thresholds. "glm": calibrated against real matched b/y ions from two
-  // independent public top-down datasets, INCLUDING the proteoform-length
-  // multiplier, fold-enrichment ~2.7x/~4.5x at these two thresholds (Elevated
-  // lowered from the original 1.5 cutpoint -- at 1.5+, most realistic-length
-  // (300+ aa) proteoforms cleared ZERO bonds at ANY tier, since the length
-  // term alone can push every bond's score below 1.5; 1.2 recovers some
-  // signal for medium-length proteoforms without changing the model itself).
-  // "rf": length-free ranking mode, RF-predicted probability (0-1), fold-
-  // enrichment ~2.5x/~3.5x (scripts/build_propensity_rf_model.R). A third
-  // "Very high" tier existed at both scales but was dropped -- confirmed
-  // directly (scripts/validate_propensity_stringency_result.rds) it almost
-  // never fires for realistic-length proteoforms in either mode, so it was
+  // models are fit fully independently and must never share thresholds,
+  // even though both now output a genuine 0-1 probability (see
+  // R/fragmentation_propensity.R vs R/fragmentation_propensity_rf.R).
+  // "glm": a single joint logistic regression (data/fragmentation_
+  // propensity_glm.rds), replacing an earlier version assembled from
+  // several separately-calibrated pieces multiplied together -- that
+  // assembly was never validated as a whole and turned out to score much
+  // worse (cross-study holdout AUROC ~0.64) than one joint fit on the same
+  // features (~0.78-0.82). Thresholds selected via the same fold-
+  // enrichment sweep as before: ~3.1x/~4.7x over the ~6.3% pooled baseline
+  // match rate. "rf": length-free ranking mode, fold-enrichment ~2.5x/~3.5x
+  // (scripts/build_propensity_rf_model.R). A third "Very high" tier existed
+  // at both scales but was dropped -- confirmed directly it almost never
+  // fires for realistic-length proteoforms in either mode, so it was
   // mostly just an extra click that led to an empty ladder.
   const TIER_THRESHOLDS = {
-    glm: { elevated: 1.2, high: 4, opNorm: [1, 9.5],
-           labels: ["All fragments", "Elevated (score>1.2)", "High (score>=4)"] },
+    glm: { elevated: 0.10, high: 0.20, opNorm: [0, 0.4],
+           labels: ["All fragments", "Elevated (score>0.10)", "High (score>=0.20)"] },
     rf: { elevated: 0.08, high: 0.15, opNorm: [0, 0.3],
           labels: ["All fragments", "Elevated (score>0.08)", "High (score>=0.15)"] }
   };
   function tierThresholds(mode) { return TIER_THRESHOLDS[mode] || TIER_THRESHOLDS.glm; }
-  // isotope-panel computation gate for RF mode -- mirrors R's
-  // RF_ISOTOPE_GATE (R/fragmentation_propensity_rf.R); GLM mode's gate
-  // stays the literal 1 (its baseline/no-effect value).
+  // isotope-panel computation gate, mirroring R's GLM_ELEVATED_THRESHOLD /
+  // RF_ELEVATED_THRESHOLD (R/fragmentation_propensity.R /
+  // R/fragmentation_propensity_rf.R) -- both modes now gate on their own
+  // Elevated cutoff rather than GLM's old baseline-relative "1".
+  const GLM_ISOTOPE_GATE_JS = 0.10;
   const RF_ISOTOPE_GATE_JS = 0.08;
 
   function passesFilter(score, level, mode) {
@@ -871,7 +873,7 @@ window.PT = (function () {
       // doesn't. Only cheap per-bond arrays are scanned here -- no isotope
       // data exists client-side yet. Threshold is scoring-mode-aware since
       // "glm" and "rf" scores are on entirely different numeric scales.
-      const isotopeGate = state.scoringMode === "rf" ? RF_ISOTOPE_GATE_JS : 1;
+      const isotopeGate = state.scoringMode === "rf" ? RF_ISOTOPE_GATE_JS : GLM_ISOTOPE_GATE_JS;
       const qualified = [];
       proteoforms.forEach(pf => {
         const localP = pf.axis_pos.indexOf(axisPos) + 1; // 1-based to match p

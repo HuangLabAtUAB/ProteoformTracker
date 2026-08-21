@@ -41,7 +41,7 @@ test_that("fragmentation_propensity_rf's raw features match the GLM path's under
 
 test_that("fragmentation_propensity_rf is not affected by proteoform length the way the GLM is", {
   # the whole point of this mode: a bond's score shouldn't collapse just
-  # because the surrounding protein is long, unlike length_propensity()
+  # because the surrounding protein is long, unlike the GLM's length term
   skip_if_not(rf_model_available, "RF model not built/available in this environment")
   short_seq <- paste0("AAAAADPAAAA", strrep("A", 20))
   long_seq <- paste0("AAAAADPAAAA", strrep("A", 600))

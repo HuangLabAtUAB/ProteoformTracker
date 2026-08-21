@@ -1,150 +1,117 @@
-test_that("residue_pair_propensity is baseline when neither Pro nor Asp effect applies", {
-  expect_equal(residue_pair_propensity("A", "A", mode = "denatured"), 1.0)
-})
-
-test_that("residue_pair_propensity enhances cleavage N-terminal to proline", {
-  score <- residue_pair_propensity("A", "P", mode = "denatured")
-  expect_equal(score, PROLINE_ENHANCEMENT$denatured)
-})
-
-test_that("residue_pair_propensity enhances cleavage C-terminal to aspartate", {
-  score <- residue_pair_propensity("D", "A", mode = "denatured")
-  expect_equal(score, ASPARTATE_ENHANCEMENT$denatured)
-})
-
-test_that("residue_pair_propensity multiplies both enhancements when a bond is D|P", {
-  score <- residue_pair_propensity("D", "P", mode = "denatured")
-  expect_equal(score, ASPARTATE_ENHANCEMENT$denatured * PROLINE_ENHANCEMENT$denatured)
-})
-
-test_that("residue_pair_propensity enhancement is stronger under native than denatured", {
-  denatured_score <- residue_pair_propensity("D", "A", mode = "denatured")
-  native_score <- residue_pair_propensity("D", "A", mode = "native")
-  expect_gt(native_score, denatured_score)
-})
-
-test_that("positional_propensity matches the calibrated lookup table by terminal distance", {
-  n <- 100
-  expect_equal(positional_propensity(1, n), TERMINAL_PROXIMITY_WEIGHTS[1])
-  expect_equal(positional_propensity(2, n), TERMINAL_PROXIMITY_WEIGHTS[2])
-  expect_equal(positional_propensity(3, n), TERMINAL_PROXIMITY_WEIGHTS[3])
-  expect_equal(positional_propensity(4, n), TERMINAL_PROXIMITY_WEIGHTS[4])
-  # beyond the calibrated table's reach, clamps to the last (6+) entry
-  expect_equal(positional_propensity(50, n), TERMINAL_PROXIMITY_WEIGHTS[6])
-  expect_equal(positional_propensity(6, n), TERMINAL_PROXIMITY_WEIGHTS[6])
-  # symmetric from the C-terminal side too
-  expect_equal(positional_propensity(n - 1, n), TERMINAL_PROXIMITY_WEIGHTS[1])
-})
-
-test_that("positional_propensity peaks a few residues in from the terminus, not right at it", {
-  n <- 100
-  # distance-1 (touching the terminus) is the calibrated WEAKEST position
-  expect_lt(positional_propensity(1, n), positional_propensity(2, n))
-  expect_lt(positional_propensity(2, n), positional_propensity(3, n))
-  expect_lt(positional_propensity(3, n), positional_propensity(4, n))
-  # ... and relaxes back down past the peak toward the interior plateau
-  expect_gt(positional_propensity(5, n), positional_propensity(50, n))
-})
-
-test_that("charge_density_propensity multiplier decreases with local K/R density", {
+test_that("local_basic_density counts K/R fraction in the window around a bond", {
   residues <- strsplit("AAAAAAAAAAA", "")[[1]] # no basic residues nearby
-  expect_equal(charge_density_propensity(residues, 6), CHARGE_DENSITY_WEIGHTS$none)
+  expect_equal(local_basic_density(residues, 6), 0)
 
-  residues_1k <- strsplit("AAAAAKAAAAA", "")[[1]] # exactly one K in the window
-  expect_equal(charge_density_propensity(residues_1k, 6), CHARGE_DENSITY_WEIGHTS$low)
+  residues_1k <- strsplit("AAAAAKAAAAA", "")[[1]] # exactly one K in the +/-5 window
+  expect_gt(local_basic_density(residues_1k, 6), 0)
 
   residues_2k <- strsplit("AAAAKAKAAAA", "")[[1]] # two basic residues nearby
-  expect_equal(charge_density_propensity(residues_2k, 6), CHARGE_DENSITY_WEIGHTS$high)
+  expect_gt(local_basic_density(residues_2k, 6), local_basic_density(residues_1k, 6))
 })
 
-test_that("length_propensity favors shorter proteoforms and clamps at both ends", {
-  expect_equal(length_propensity(LENGTH_REFERENCE), 1.0)
-  expect_gt(length_propensity(50), length_propensity(200)) # shorter -> higher multiplier
-  # clamped below LENGTH_CLAMP_MIN and above LENGTH_CLAMP_MAX
-  expect_equal(length_propensity(5), length_propensity(LENGTH_CLAMP_MIN))
-  expect_equal(length_propensity(10000), length_propensity(LENGTH_CLAMP_MAX))
-})
-
-test_that("phospho_proximity_propensity suppresses bonds near a phosphosite and is otherwise a no-op", {
-  expect_equal(phospho_proximity_propensity(list(), 10), BASELINE_WEIGHT)
+test_that("is_near_phosphosite detects proximity to a real phospho PTM and is otherwise a no-op", {
+  expect_false(is_near_phosphosite(list(), 10))
 
   far <- list(ptm(site = 50, mass_delta_mono = 79.966331, name = "Phospho", unimod_id = "UNIMOD:21"))
-  expect_equal(phospho_proximity_propensity(far, 10), BASELINE_WEIGHT)
+  expect_false(is_near_phosphosite(far, 10))
 
   near <- list(ptm(site = 12, mass_delta_mono = 79.966331, name = "Phospho", unimod_id = "UNIMOD:21"))
-  expect_equal(phospho_proximity_propensity(near, 10), PHOSPHO_SUPPRESSION)
+  expect_true(is_near_phosphosite(near, 10))
 
-  # a non-phospho PTM nearby doesn't trigger suppression
+  # a non-phospho PTM nearby doesn't count
   other <- list(ptm(site = 10, mass_delta_mono = 42.010565, name = "Acetyl", unimod_id = "UNIMOD:1"))
-  expect_equal(phospho_proximity_propensity(other, 10), BASELINE_WEIGHT)
+  expect_false(is_near_phosphosite(other, 10))
 
   # terminal-site PTMs have no residue position and are safely ignored
   terminal <- list(ptm(site = "N-term", mass_delta_mono = 79.966331, name = "Phospho", unimod_id = "UNIMOD:21"))
-  expect_equal(phospho_proximity_propensity(terminal, 10), BASELINE_WEIGHT)
+  expect_false(is_near_phosphosite(terminal, 10))
 })
 
-test_that("fragmentation_propensity extracts residue pairs correctly and combines effects multiplicatively", {
-  # no K/R anywhere in this sequence, so charge_density_score is a 1.0
-  # no-op throughout and residue-pair/positional effects can be checked
-  # in isolation: i=6 D|P (both chemistry effects), i=10 A|P (Pro only)
+test_that("fragmentation_propensity requires a fitted GLM model", {
+  p <- proteoform(id = "test", sequence = "AAAAADPAAAPAAAA", provenance = "manual")
+  expect_error(fragmentation_propensity(p, glm_model = NULL), "unavailable")
+})
+
+test_that("fragmentation_propensity returns a genuine probability (0-1) per bond, one row per cleavage position", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
   seq <- "AAAAADPAAAPAAAA"
   p <- proteoform(id = "test", sequence = seq, provenance = "manual")
   result <- fragmentation_propensity(p, mode = "denatured", method = "HCD")
 
   expect_equal(nrow(result), nchar(seq) - 1)
-  expect_true(all(result$charge_density_score == CHARGE_DENSITY_WEIGHTS$none))
-  expect_true(all(result$length_score == length_propensity(nchar(seq))))
-  expect_true(all(result$phospho_score == BASELINE_WEIGHT)) # no ptms on this proteoform
+  expect_setequal(colnames(result), c("cleavage_position", "residue_before", "residue_after", "propensity_score"))
+  expect_true(all(result$propensity_score >= 0 & result$propensity_score <= 1))
 
   bond6 <- result[result$cleavage_position == 6, ]
   expect_equal(bond6$residue_before, "D")
   expect_equal(bond6$residue_after, "P")
-  expect_equal(bond6$positional_score, positional_propensity(6, nchar(seq)))
-  expect_equal(bond6$residue_pair_score, ASPARTATE_ENHANCEMENT$denatured * PROLINE_ENHANCEMENT$denatured)
-  expect_equal(bond6$propensity_score,
-    bond6$residue_pair_score * bond6$positional_score * bond6$charge_density_score *
-      bond6$length_score * bond6$phospho_score * bond6$accessibility_score)
+})
 
-  bond10 <- result[result$cleavage_position == 10, ]
-  expect_equal(bond10$residue_before, "A")
-  expect_equal(bond10$residue_after, "P")
-  expect_equal(bond10$residue_pair_score, PROLINE_ENHANCEMENT$denatured)
+test_that("fragmentation_propensity ranks a Pro/Asp-adjacent bond above a plain-residue bond, all else equal", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
+  # bond 6 is D|P (both chemistry effects); bond 3 is a plain A|A bond, same
+  # distance-from-terminus tier (>=6, so both hit the same td_bucket) and no
+  # K/R anywhere in the sequence (same charge-density bucket for both)
+  seq <- "AAAAADPAAAAAAAAAAAAAA"
+  p <- proteoform(id = "test", sequence = seq, provenance = "manual")
+  result <- fragmentation_propensity(p, mode = "denatured", method = "HCD")
+  bond6 <- result$propensity_score[result$cleavage_position == 6]
+  bond3 <- result$propensity_score[result$cleavage_position == 3]
+  expect_gt(bond6, bond3)
+})
 
-  bond8 <- result[result$cleavage_position == 8, ]
-  expect_equal(bond8$residue_pair_score, 1.0)
-  expect_equal(bond8$propensity_score, positional_propensity(8, nchar(seq)) * length_propensity(nchar(seq)))
+test_that("fragmentation_propensity is deterministic (same input, same output) despite averaging over nuisance covariates", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
+  p <- proteoform(id = "test", sequence = "AAAAADPAAAPAAAA", provenance = "manual")
+  r1 <- fragmentation_propensity(p, mode = "denatured", method = "HCD")
+  r2 <- fragmentation_propensity(p, mode = "denatured", method = "HCD")
+  expect_equal(r1$propensity_score, r2$propensity_score)
 })
 
 test_that("fragmentation_propensity applies phospho suppression only near an actual phosphosite", {
-  seq <- "AAAAADPAAAPAAAA" # 15 residues
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
+  seq <- "AAAAADPAAAPAAAAAAAAAAAAAAAAAAAAAA"
   ptms <- list(ptm(site = 8, mass_delta_mono = 79.966331, name = "Phospho", unimod_id = "UNIMOD:21"))
-  p <- proteoform(id = "test", sequence = seq, ptms = ptms, provenance = "manual")
-  result <- fragmentation_propensity(p, mode = "denatured", method = "HCD")
+  p_with <- proteoform(id = "test", sequence = seq, ptms = ptms, provenance = "manual")
+  p_without <- proteoform(id = "test", sequence = seq, provenance = "manual")
+  with_phospho <- fragmentation_propensity(p_with, mode = "denatured", method = "HCD")
+  without_phospho <- fragmentation_propensity(p_without, mode = "denatured", method = "HCD")
 
-  near <- result[result$cleavage_position == 8, ]
-  expect_equal(near$phospho_score, PHOSPHO_SUPPRESSION)
+  near <- with_phospho$propensity_score[with_phospho$cleavage_position == 8]
+  near_baseline <- without_phospho$propensity_score[without_phospho$cleavage_position == 8]
+  expect_lt(near, near_baseline) # suppressed near the phosphosite
 
-  far <- result[result$cleavage_position == 1, ]
-  expect_equal(far$phospho_score, BASELINE_WEIGHT)
+  far <- with_phospho$propensity_score[with_phospho$cleavage_position == 1]
+  far_baseline <- without_phospho$propensity_score[without_phospho$cleavage_position == 1]
+  expect_equal(far, far_baseline) # unaffected far from the phosphosite
 })
 
-test_that("fragmentation_propensity's accessibility term is always a 1.0 no-op for HCD/CID", {
-  p <- proteoform(id = "test", sequence = "AAAAADPAAAPAAAA", provenance = "manual")
-  result <- fragmentation_propensity(p, method = "HCD")
-  expect_true(all(result$accessibility_score == 1.0))
+test_that("fragmentation_propensity's length effect: shorter proteoforms score higher on average, all else equal", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
+  set.seed(1)
+  aa <- strsplit("ACDEFGHIKLMNPQRSTVWY", "")[[1]]
+  mkseq <- function(n) paste(sample(aa, n, replace = TRUE), collapse = "")
+  short_pf <- proteoform(id = "short", sequence = mkseq(60), provenance = "manual")
+  long_pf <- proteoform(id = "long", sequence = mkseq(300), provenance = "manual")
+  short_scores <- fragmentation_propensity(short_pf, mode = "denatured", method = "HCD")$propensity_score
+  long_scores <- fragmentation_propensity(long_pf, mode = "denatured", method = "HCD")$propensity_score
+  expect_gt(median(short_scores), median(long_scores))
 })
 
 test_that("fragmentation_propensity rejects unimplemented dissociation methods", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
   p <- proteoform(id = "test", sequence = "AAAAADPAAAPAAAA", provenance = "manual")
   expect_error(fragmentation_propensity(p, method = "ETD"), "HCD/CID")
   expect_error(fragmentation_propensity(p, method = "UVPD"), "HCD/CID")
 })
 
 test_that("fragmentation_propensity rejects sequences shorter than 2 residues", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
   p <- proteoform(id = "short", sequence = "A", provenance = "manual")
   expect_error(fragmentation_propensity(p), "at least 2 residues")
 })
 
 test_that("fragmentation_propensity requires a proteoform object", {
+  skip_if_not(glm_model_available, "GLM model not built/available in this environment")
   expect_error(fragmentation_propensity(list(sequence = "AAAA")), "requires a proteoform")
 })
