@@ -29,7 +29,7 @@ before any scoring runs:
 - **FASTA → ORF** — a pasted/uploaded transcript sequence, spliced-aligned against GRCh38 with
   minimap2 to identify the matching known isoform, independently translated via TransDecoder ORF
   calling.
-- **rMATS event** — an uploaded rMATS SE/MXE differential-splicing results file; each arm of a
+- **rMATS event** — an uploaded rMATS SE/MXE/RI/A5SS/A3SS differential-splicing results file; each arm of a
   selected event is matched against a precomputed genome-wide exon-structure index to recover
   full-length transcripts (including constructed synthetic isoforms for the alternative arm).
 

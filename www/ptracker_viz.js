@@ -1415,6 +1415,18 @@ if (window.Shiny) {
   // use this one handler, just pointed at their own DOM element ids --
   // don't clobber each other's zoom/pan state.
   let exonAlignStates = {};
+  // AbortController per instance ("fasta"/"rmats"), so a later render (or
+  // the Reset button, below) can tear down the PREVIOUS render's pan/zoom
+  // listeners on the exon-alignment SVG before attaching new ones -- same
+  // stale-closure bug PT.resetInteractions() already fixes for the MS1/
+  // ladder charts (see that function's own doc comment), just never
+  // extended to this SVG since attachPanZoom() was called here with no
+  // opts.signal at all. Reproduced directly: Reset the rMATS panel, then
+  // scroll the mouse wheel over where the exon alignment used to be -- the
+  // old alignment reappeared, because the wheel listener (still attached to
+  // the SVG element, which Reset only empties, not removes) closed over the
+  // previous render's now-stale `payload`/`state`/`redraw`.
+  let exonAlignAborts = {};
   Shiny.addCustomMessageHandler("pt_render_exon_alignment", function (msg) {
     const instance = msg.instance || "fasta";
     const svgId = msg.svg_id || "fasta-exon-align";
@@ -1425,6 +1437,10 @@ if (window.Shiny) {
     const legendEl = document.getElementById(legendId);
     const zoomEl = document.getElementById(zoomId);
     if (!svgEl) return;
+    // Abort the PREVIOUS render's pan/zoom listeners before doing anything
+    // else (including the no-data early return below) -- see
+    // exonAlignAborts' own doc comment.
+    if (exonAlignAborts[instance]) { exonAlignAborts[instance].abort(); delete exonAlignAborts[instance]; }
     const payload = msg.has_data ? msg.payload : null;
     if (legendEl) legendEl.innerHTML = payload ? PT.exonAlignmentLegendHtml(payload.highlights) : "";
     if (!payload) { PT.renderExonAlignment(svgEl, null); if (zoomEl) zoomEl.innerHTML = ""; exonAlignStates[instance] = null; return; }
@@ -1452,7 +1468,9 @@ if (window.Shiny) {
       zoomEl.innerHTML = PT.zoomControlsHtml(idPrefix);
       PT.wireZoomButtons(idPrefix, state, redraw);
     }
-    PT.attachPanZoom(svgEl, state, redraw, {});
+    const controller = new AbortController();
+    exonAlignAborts[instance] = controller;
+    PT.attachPanZoom(svgEl, state, redraw, { signal: controller.signal });
   });
 
   // Toggles a button's disabled state -- used to grey out "Run analysis"
@@ -1512,6 +1530,20 @@ if (window.Shiny) {
     // returning could still hit a live (about-to-be-orphaned) listener.
     // See resetInteractions()'s own doc comment for the bug this fixes.
     PT.resetInteractions();
+    // Same fix, for the FASTA/rMATS exon-alignment SVGs' own pan/zoom
+    // listeners -- see exonAlignAborts' own doc comment. onmousedown is a
+    // plain property assignment (attachPanZoom sets svgEl.onmousedown =
+    // ..., not addEventListener), so it isn't covered by the abort signal
+    // and has to be nulled out directly, or a stray drag (not just a
+    // scroll) could still revive the stale alignment the same way.
+    ["fasta", "rmats"].forEach(instance => {
+      if (exonAlignAborts[instance]) { exonAlignAborts[instance].abort(); delete exonAlignAborts[instance]; }
+      exonAlignStates[instance] = null;
+    });
+    ["fasta-exon-align", "rmats-exon-align"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.onmousedown = null;
+    });
     PT.collapseSection("s1-collapse-body", "(run analysis to populate)");
     PT.collapseSection("s2-collapse-body", "(run analysis to populate)");
     PT.collapseSection("s2-ms1-collapse-body", "");

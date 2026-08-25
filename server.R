@@ -1467,15 +1467,18 @@ function(input, output, session) {
   # Option 3: rMATS upload. rMATS only reports the differential exon(s) and
   # their immediate flanking exons, not the rest of the transcript -- so
   # instead of trying to invent a full transcript from a handful of exons'
-  # worth of information, match_rmats_se_transcripts()/
-  # match_rmats_mxe_transcripts() (R/rmats_adapter.R) look up which
-  # already-annotated transcripts of the gene (same reference_exon_index
-  # Option 1 uses) structurally match each "arm" of the event (e.g.
-  # exon-inclusion vs exon-skipping for SE; 1st-exon vs 2nd-exon for MXE).
-  # The user picks which of those real transcripts to send into the SAME
+  # worth of information, RMATS_MATCHERS[[event_type]] (R/rmats_adapter.R;
+  # match_rmats_se_transcripts()/match_rmats_mxe_transcripts()/
+  # match_rmats_ri_transcripts()/match_rmats_a5ss_transcripts()/
+  # match_rmats_a3ss_transcripts()) look up which already-annotated
+  # transcripts of the gene (same reference_exon_index Option 1 uses)
+  # structurally match each "arm" of the event (e.g. exon-inclusion vs
+  # exon-skipping for SE; 1st-exon vs 2nd-exon for MXE; intron-retained vs
+  # -spliced for RI; long- vs short-exon form for A5SS/A3SS). The user
+  # picks which of those real transcripts to send into the SAME
   # catalog()/bare_pfs() pathway Option 1/2 use -- so the rest of the app
   # (proteoform table, digestion, Run analysis, MS1/MS2, confounder search)
-  # works unchanged here too. Only SE and MXE are supported so far.
+  # works unchanged here too. SE, MXE, RI, A5SS, and A3SS are all supported.
   # ============================================================
   rmats_event <- reactiveVal(NULL)
   rmats_matches <- reactiveVal(NULL)
@@ -1501,8 +1504,8 @@ function(input, output, session) {
   # on every dependency change rather than caching, but parsing a rMATS
   # text file is cheap relative to the matching step.
   rmats_events <- reactive({
-    req(input$rmats_file, input$rmats_event_type %in% c("SE", "MXE"))
-    parser <- if (identical(input$rmats_event_type, "MXE")) parse_rmats_mxe else parse_rmats_se
+    req(input$rmats_file, input$rmats_event_type %in% RMATS_EVENT_TYPES)
+    parser <- RMATS_PARSERS[[input$rmats_event_type]]
     tryCatch(parser(input$rmats_file$datapath), error = function(e) NULL)
   })
 
@@ -1573,7 +1576,7 @@ function(input, output, session) {
       identical(sub("^([0-9]+)_.*$", "\\1", input$rmats_event_select), as.character(gen))
     session$sendCustomMessage("pt_set_button_enabled", list(
       id = "btn_run_rmats",
-      enabled = !is.null(input$rmats_file) && input$rmats_event_type %in% c("SE", "MXE") &&
+      enabled = !is.null(input$rmats_file) && input$rmats_event_type %in% RMATS_EVENT_TYPES &&
         picked_this_round && ms_strategy_set() && ms_resolution_set()
     ))
   })
@@ -1582,9 +1585,9 @@ function(input, output, session) {
     event_type <- input$rmats_event_type
     gen <- rmats_events_generation()
     sel <- input$rmats_event_select
-    req(input$rmats_file, event_type %in% c("SE", "MXE"), sel, nzchar(sel),
+    req(input$rmats_file, event_type %in% RMATS_EVENT_TYPES, sel, nzchar(sel),
         identical(sub("^([0-9]+)_.*$", "\\1", sel), as.character(gen)))
-    matcher <- if (identical(event_type, "MXE")) match_rmats_mxe_transcripts else match_rmats_se_transcripts
+    matcher <- RMATS_MATCHERS[[event_type]]
     events <- rmats_events()
     req(events, nrow(events) > 0)
     row_i <- as.integer(sub("^[0-9]+_", "", sel))
@@ -1642,7 +1645,7 @@ function(input, output, session) {
         backbone <- input[[paste0("rmats_backbone_arm", i)]]
         if (is.null(backbone) || !nzchar(backbone)) backbone <- default_backbone_for_arm(matches, k)
         if (is.na(backbone)) next
-        synth <- build_rmats_arm_isoform(backbone, matches$flanks, matches$cassette[[k]], reference_exon_index)
+        synth <- build_rmats_arm_isoform(backbone, matches$flanks[[k]], matches$cassette[[k]], reference_exon_index)
         if (is.null(synth)) next
         tid <- sprintf("CONSTRUCTED_%s_%s", k, backbone)
         translated <- translate_rmats_constructed_isoform(synth, tid, event$gene_symbol)

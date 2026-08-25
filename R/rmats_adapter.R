@@ -18,9 +18,15 @@
 # of "arms", each an (id, is_canonical, pairing_score) candidate table, plus
 # a list of genomic highlight_regions (the exon(s) rMATS itself flagged as
 # differential) -- so the server/UI code and the exon-alignment renderer
-# don't need to know or care which event type produced them. Only SE and
-# MXE are implemented so far; A3SS/A5SS/RI are a planned follow-up using
-# the same match_rmats_arm_transcripts()/build_rmats_arms_result() core.
+# don't need to know or care which event type produced them. SE, MXE, RI,
+# A5SS, and A3SS are all implemented, using the same
+# match_rmats_arm_transcripts()/build_rmats_arms_result() core (RI's
+# intron-retained arm is the one exception -- see
+# match_rmats_ri_retained_transcripts()'s doc comment for why).
+#
+# RMATS_PARSERS/RMATS_MATCHERS (bottom of this file) are the dispatch
+# tables server.R uses to go from the user's chosen event type to the
+# right parse_rmats_*()/match_rmats_*_transcripts() pair.
 
 #' Parse an rMATS SE (skipped-exon) results file (tab-delimited, one row per
 #' event). Coordinate convention (confirmed directly against a real event --
@@ -102,6 +108,121 @@ parse_rmats_mxe <- function(path) {
   )
 }
 
+#' Parse an rMATS RI (retained-intron) results file. Same coordinate
+#' convention as parse_rmats_se(): *ES columns 0-based (+1 here), *EE
+#' columns already 1-based inclusive. The "retained" form is a single exon
+#' spanning riExonStart-riExonEnd (upstream exon + intron + downstream exon
+#' merged into one); the "spliced" form has the intron properly removed,
+#' leaving upstreamES-upstreamEE and downstreamES-downstreamEE as two
+#' separate, adjacent exons. Confirmed directly against tests/RI_test.txt:
+#' the retained exon's own start/end exactly equal the upstream flank's
+#' start and the downstream flank's end -- it IS the union of the two.
+#'
+#' @param path path to an rMATS RI .txt/.MATS.JC.txt file
+#' @return data.frame, one row per event: event_id, gene_id, gene_symbol,
+#'   chr, strand, ri_start, ri_end (the retained-intron exon, spanning both
+#'   flanks), flank_lo_start, flank_lo_end, flank_hi_start, flank_hi_end
+#'   (same genomic-lower/higher convention as parse_rmats_se()),
+#'   inc_level_difference
+parse_rmats_ri <- function(path) {
+  df <- read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
+  required <- c("GeneID", "geneSymbol", "chr", "strand", "riExonStart_0base", "riExonEnd",
+                "upstreamES", "upstreamEE", "downstreamES", "downstreamEE")
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) {
+    stop(sprintf("Not a valid rMATS RI file -- missing column(s): %s", paste(missing, collapse = ", ")))
+  }
+  strip_quotes <- function(x) gsub('^"|"$', "", x)
+  data.frame(
+    event_id = df[[1]],
+    gene_id = sub("\\.[0-9]+$", "", strip_quotes(df$GeneID)),
+    gene_symbol = strip_quotes(df$geneSymbol),
+    chr = sub("^chr", "", df$chr),
+    strand = df$strand,
+    ri_start = as.integer(df$riExonStart_0base) + 1L,
+    ri_end = as.integer(df$riExonEnd),
+    flank_lo_start = as.integer(df$upstreamES) + 1L,
+    flank_lo_end = as.integer(df$upstreamEE),
+    flank_hi_start = as.integer(df$downstreamES) + 1L,
+    flank_hi_end = as.integer(df$downstreamEE),
+    inc_level_difference = suppressWarnings(as.numeric(df$IncLevelDifference)),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Parse an rMATS A5SS (alternative 5' splice site) results file. Same
+#' coordinate convention as parse_rmats_se(). The "long" and "short" forms
+#' are two alternative boundaries of ONE exon (sharing one edge, differing
+#' on the other -- the varying edge is the alternative 5' splice donor site
+#' itself); unlike SE/MXE, only ONE flanking exon is reported (not an
+#' upstream+downstream pair) -- see match_rmats_altss_transcripts()'s doc
+#' comment for which side of the alt exon that flank sits on.
+#'
+#' @param path path to an rMATS A5SS .txt/.MATS.JC.txt file
+#' @return data.frame, one row per event: event_id, gene_id, gene_symbol,
+#'   chr, strand, long_start, long_end, short_start, short_end,
+#'   flank_start, flank_end, inc_level_difference
+parse_rmats_a5ss <- function(path) {
+  df <- read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
+  required <- c("GeneID", "geneSymbol", "chr", "strand", "longExonStart_0base", "longExonEnd",
+                "shortES", "shortEE", "flankingES", "flankingEE")
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) {
+    stop(sprintf("Not a valid rMATS A5SS file -- missing column(s): %s", paste(missing, collapse = ", ")))
+  }
+  strip_quotes <- function(x) gsub('^"|"$', "", x)
+  data.frame(
+    event_id = df[[1]],
+    gene_id = sub("\\.[0-9]+$", "", strip_quotes(df$GeneID)),
+    gene_symbol = strip_quotes(df$geneSymbol),
+    chr = sub("^chr", "", df$chr),
+    strand = df$strand,
+    long_start = as.integer(df$longExonStart_0base) + 1L,
+    long_end = as.integer(df$longExonEnd),
+    short_start = as.integer(df$shortES) + 1L,
+    short_end = as.integer(df$shortEE),
+    flank_start = as.integer(df$flankingES) + 1L,
+    flank_end = as.integer(df$flankingEE),
+    inc_level_difference = suppressWarnings(as.numeric(df$IncLevelDifference)),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Parse an rMATS A3SS (alternative 3' splice site) results file. Same file
+#' shape and column names as parse_rmats_a5ss() (rMATS reuses
+#' longExonStart_0base/longExonEnd/shortES/shortEE/flankingES/flankingEE
+#' for both event types) -- the only difference between A5SS and A3SS is
+#' which side of the alternative exon the single flank represents, handled
+#' entirely in match_rmats_altss_transcripts(), not here.
+#'
+#' @param path path to an rMATS A3SS .txt/.MATS.JC.txt file
+#' @return same columns as parse_rmats_a5ss()
+parse_rmats_a3ss <- function(path) {
+  df <- read.delim(path, stringsAsFactors = FALSE, check.names = FALSE)
+  required <- c("GeneID", "geneSymbol", "chr", "strand", "longExonStart_0base", "longExonEnd",
+                "shortES", "shortEE", "flankingES", "flankingEE")
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) {
+    stop(sprintf("Not a valid rMATS A3SS file -- missing column(s): %s", paste(missing, collapse = ", ")))
+  }
+  strip_quotes <- function(x) gsub('^"|"$', "", x)
+  data.frame(
+    event_id = df[[1]],
+    gene_id = sub("\\.[0-9]+$", "", strip_quotes(df$GeneID)),
+    gene_symbol = strip_quotes(df$geneSymbol),
+    chr = sub("^chr", "", df$chr),
+    strand = df$strand,
+    long_start = as.integer(df$longExonStart_0base) + 1L,
+    long_end = as.integer(df$longExonEnd),
+    short_start = as.integer(df$shortES) + 1L,
+    short_end = as.integer(df$shortEE),
+    flank_start = as.integer(df$flankingES) + 1L,
+    flank_end = as.integer(df$flankingEE),
+    inc_level_difference = suppressWarnings(as.numeric(df$IncLevelDifference)),
+    stringsAsFactors = FALSE
+  )
+}
+
 #' rMATS' own "upstream"/"downstream" column names are by GENOMIC coordinate
 #' (upstream = lower coordinate, downstream = higher), NOT by transcription
 #' direction -- confirmed directly: for MYOM1 (minus strand), the real
@@ -161,8 +282,16 @@ lookup_rmats_gene_tbl <- function(event, exon_index) {
 #' the entire evidence for "this transcript skips directly from one flank
 #' to the other", so it can't be relaxed to just one flank the same way.
 #'
+#' A5SS/A3SS events only ever report ONE real flank (not an upstream+
+#' downstream pair) -- see match_rmats_altss_transcripts(). Passing NULL
+#' for whichever of five_prime/three_prime rMATS didn't report degrades
+#' the "at least one flank matches" rule down to "the one real flank must
+#' match", exactly what's needed when there's only one to check.
+#'
 #' @param gene_tbl the gene's own subset of reference_exon_index
-#' @param flanks list(five_prime=, three_prime=), each list(start=,end=)
+#' @param flanks list(five_prime=, three_prime=), each either NULL or
+#'   list(start=,end=) -- NULL means "no flank reported on this side, don't
+#'   require anything here" (used by A5SS/A3SS, which only report one side)
 #' @param middle_exon NULL, or list(start=,end=) for the cassette exon
 #'   expected adjacent to at least one of the two flanks
 #' @return data.frame(transcript_id, anchor) -- anchor is "both",
@@ -170,7 +299,10 @@ lookup_rmats_gene_tbl <- function(event, exon_index) {
 #'   always "both" when middle_exon is NULL. 0 rows if nothing matches.
 match_rmats_arm_transcripts <- function(gene_tbl, flanks, middle_exon = NULL) {
   fp <- flanks$five_prime; tp <- flanks$three_prime
-  matches_coord <- function(row, coord) !is.na(row$start) && row$start == coord$start && row$end == coord$end
+  matches_coord <- function(row, coord) {
+    !is.null(coord) && !is.na(coord$start) && !is.na(row$start) &&
+      row$start == coord$start && row$end == coord$end
+  }
 
   ids <- character(0)
   anchors <- character(0)
@@ -307,10 +439,14 @@ match_rmats_se_transcripts <- function(event, exon_index) {
     list(start = event$target_start, end = event$target_end, label = "Differential exon (rMATS)"),
     list(start = event$flank_hi_start, end = event$flank_hi_end, label = "Downstream flank exon (rMATS)")
   )
+  # flanks is the SAME for both arms here (unlike RI, where the retained
+  # arm needs no flanks at all) -- stored per-arm anyway so
+  # build_rmats_full_alignment()/build_rmats_arm_isoform() callers can
+  # always index matches$flanks[[arm_key]] regardless of event type.
   if (is.null(gene_tbl)) {
     result <- build_rmats_arms_result(NULL, list(inclusion = empty_match, exclusion = empty_match), arm_labels)
     result$highlight_regions <- highlight_regions
-    result$flanks <- flanks
+    result$flanks <- list(inclusion = flanks, exclusion = flanks)
     result$cassette <- cassette
     result$gene_transcript_ids <- character(0)
     result$canonical_transcript_id <- NA_character_
@@ -320,7 +456,7 @@ match_rmats_se_transcripts <- function(event, exon_index) {
   exclusion_matches <- match_rmats_arm_transcripts(gene_tbl, flanks, NULL)
   result <- build_rmats_arms_result(gene_tbl, list(inclusion = inclusion_matches, exclusion = exclusion_matches), arm_labels)
   result$highlight_regions <- highlight_regions
-  result$flanks <- flanks
+  result$flanks <- list(inclusion = flanks, exclusion = flanks)
   result$cassette <- cassette
   result$gene_transcript_ids <- unique(gene_tbl$transcript_id)
   canon <- unique(gene_tbl$transcript_id[gene_tbl$is_canonical])
@@ -357,7 +493,7 @@ match_rmats_mxe_transcripts <- function(event, exon_index) {
   if (is.null(gene_tbl)) {
     result <- build_rmats_arms_result(NULL, list(exon1 = empty_match, exon2 = empty_match), arm_labels)
     result$highlight_regions <- highlight_regions
-    result$flanks <- flanks
+    result$flanks <- list(exon1 = flanks, exon2 = flanks)
     result$cassette <- cassette
     result$gene_transcript_ids <- character(0)
     result$canonical_transcript_id <- NA_character_
@@ -367,12 +503,187 @@ match_rmats_mxe_transcripts <- function(event, exon_index) {
   exon2_matches <- match_rmats_arm_transcripts(gene_tbl, flanks, cassette$exon2)
   result <- build_rmats_arms_result(gene_tbl, list(exon1 = exon1_matches, exon2 = exon2_matches), arm_labels)
   result$highlight_regions <- highlight_regions
-  result$flanks <- flanks
+  result$flanks <- list(exon1 = flanks, exon2 = flanks)
   result$cassette <- cassette
   result$gene_transcript_ids <- unique(gene_tbl$transcript_id)
   canon <- unique(gene_tbl$transcript_id[gene_tbl$is_canonical])
   result$canonical_transcript_id <- if (length(canon) > 0) canon[1] else NA_character_
   result
+}
+
+#' Finds every annotated transcript in gene_tbl with an exon EXACTLY
+#' spanning ri_exon's coordinates. Unlike every other arm-matching function
+#' in this file, this is NOT an adjacency check: the retained-intron form's
+#' whole point is a single continuous exon that already merges the upstream
+#' exon, the intron, and the downstream exon into one, so there's nothing
+#' left for it to be adjacent to -- a transcript either has an exon at
+#' exactly this position or it doesn't.
+#'
+#' @param gene_tbl the gene's own subset of reference_exon_index
+#' @param ri_exon list(start=,end=) the full retained-intron exon span
+#' @return data.frame(transcript_id, anchor) -- anchor is always "both",
+#'   matching the schema match_rmats_arm_transcripts() returns (rmats_
+#'   anchor_note() treats "both" as "nothing partial to flag", which is
+#'   right here too: this is a full exact-coordinate match, not a
+#'   one-flank-only one)
+match_rmats_ri_retained_transcripts <- function(gene_tbl, ri_exon) {
+  hit <- !is.na(gene_tbl$start) & gene_tbl$start == ri_exon$start & gene_tbl$end == ri_exon$end
+  ids <- unique(gene_tbl$transcript_id[hit])
+  data.frame(transcript_id = ids, anchor = rep("both", length(ids)), stringsAsFactors = FALSE)
+}
+
+#' For one parsed RI event, find every annotated transcript of its gene
+#' that structurally represents the intron-RETAINED form (a single exon
+#' exactly spanning ri_start-ri_end, see
+#' match_rmats_ri_retained_transcripts()) or the intron-SPLICED form
+#' (separate, immediately-adjacent upstream/downstream exons -- the same
+#' "both flanks directly adjacent to each other" rule
+#' match_rmats_arm_transcripts() uses for SE's exclusion arm).
+#'
+#' Unlike SE/MXE, the two arms need DIFFERENT flanks for constructing their
+#' synthetic isoforms (build_rmats_arm_isoform()): the retained arm needs
+#' NONE (its one merged exon already covers the whole locus, so anything
+#' the backbone contributes there would just create duplicate/overlapping
+#' exons), while the spliced arm needs both upstream and downstream. So
+#' (unlike match_rmats_se_transcripts()/match_rmats_mxe_transcripts(),
+#' where both arms share one flanks object) `result$flanks` here is
+#' genuinely per-arm.
+#'
+#' @param event one row of parse_rmats_ri()'s output
+#' @param exon_index the precomputed reference_exon_index
+#' @return same shape as match_rmats_se_transcripts(), with arms
+#'   retained/spliced and highlight_regions for the upstream flank, the
+#'   full retained-intron exon, and the downstream flank
+match_rmats_ri_transcripts <- function(event, exon_index) {
+  gene_tbl <- lookup_rmats_gene_tbl(event, exon_index)
+  arm_labels <- c(retained = "Intron-retained form", spliced = "Intron-spliced form")
+  empty_match <- data.frame(transcript_id = character(0), anchor = character(0), stringsAsFactors = FALSE)
+  flanks <- genomic_flanks_in_transcript_order(
+    event$strand,
+    list(start = event$flank_lo_start, end = event$flank_lo_end),
+    list(start = event$flank_hi_start, end = event$flank_hi_end)
+  )
+  ri_exon <- list(start = event$ri_start, end = event$ri_end)
+  no_flanks <- list(five_prime = NULL, three_prime = NULL)
+  highlight_regions <- list(
+    list(start = event$flank_lo_start, end = event$flank_lo_end, label = "Upstream flank exon (rMATS)"),
+    list(start = event$ri_start, end = event$ri_end, label = "Retained-intron exon (rMATS)"),
+    list(start = event$flank_hi_start, end = event$flank_hi_end, label = "Downstream flank exon (rMATS)")
+  )
+  if (is.null(gene_tbl)) {
+    result <- build_rmats_arms_result(NULL, list(retained = empty_match, spliced = empty_match), arm_labels)
+    result$highlight_regions <- highlight_regions
+    result$flanks <- list(retained = no_flanks, spliced = flanks)
+    result$cassette <- list(retained = ri_exon, spliced = NULL)
+    result$gene_transcript_ids <- character(0)
+    result$canonical_transcript_id <- NA_character_
+    return(result)
+  }
+  retained_matches <- match_rmats_ri_retained_transcripts(gene_tbl, ri_exon)
+  spliced_matches <- match_rmats_arm_transcripts(gene_tbl, flanks, NULL)
+  result <- build_rmats_arms_result(gene_tbl, list(retained = retained_matches, spliced = spliced_matches), arm_labels)
+  result$highlight_regions <- highlight_regions
+  result$flanks <- list(retained = no_flanks, spliced = flanks)
+  result$cassette <- list(retained = ri_exon, spliced = NULL)
+  result$gene_transcript_ids <- unique(gene_tbl$transcript_id)
+  canon <- unique(gene_tbl$transcript_id[gene_tbl$is_canonical])
+  result$canonical_transcript_id <- if (length(canon) > 0) canon[1] else NA_character_
+  result
+}
+
+#' Shared implementation for match_rmats_a5ss_transcripts()/
+#' match_rmats_a3ss_transcripts() -- A5SS and A3SS are structurally
+#' identical (a "long" vs "short" form of one exon, adjacent to a SINGLE
+#' reported flanking exon) and differ only in which side of the
+#' alternative exon that flank sits on. That side is a fixed property of
+#' the event type, not the strand: A5SS varies the 5' splice DONOR site,
+#' which by definition is the boundary between the alternative exon and
+#' the intron immediately FOLLOWING it in transcript direction -- so the
+#' flank is always on the alt exon's transcript-3' side. A3SS varies the
+#' 3' splice ACCEPTOR site, the boundary with the intron immediately
+#' PRECEDING the alt exon -- so the flank is always on the transcript-5'
+#' side. Confirmed against real + strand data (tests/A5SS_test.txt,
+#' tests/A3SS_test.txt): A5SS's flank sits at a HIGHER genomic coordinate
+#' than the alt exon, A3SS's at a LOWER one -- consistent with "transcript-
+#' 3'/5' side" on a + strand gene, where transcript order matches genomic
+#' order. NOT independently re-verified against a minus-strand example (none
+#' was available in the provided test files) -- the minus-strand case relies
+#' on the same genomic<->transcript-direction remapping already validated
+#' for SE/MXE's upstream/downstream columns (see
+#' genomic_flanks_in_transcript_order()), applied here to a fixed
+#' five_prime/three_prime side instead of two genomically-named columns.
+#' No strand-dependent remapping of WHICH raw coordinate (start vs end) is
+#' long/short's "shared" vs "varying" boundary is needed anywhere in this
+#' code, since matching always uses both forms' complete (start,end) pairs
+#' directly from the file, never decomposing them into shared/varying parts.
+#'
+#' @param event one row of parse_rmats_a5ss()/parse_rmats_a3ss()'s output
+#'   (both share the same long_start/long_end/short_start/short_end/
+#'   flank_start/flank_end columns)
+#' @param exon_index the precomputed reference_exon_index
+#' @param flank_side "five_prime" (A3SS) or "three_prime" (A5SS) -- which
+#'   side of the alternative exon the single reported flank represents
+#' @param arm_labels named c(long=, short=) human-readable arm labels
+#' @return same shape as match_rmats_se_transcripts(), with arms long/short
+match_rmats_altss_transcripts <- function(event, exon_index, flank_side, arm_labels) {
+  gene_tbl <- lookup_rmats_gene_tbl(event, exon_index)
+  empty_match <- data.frame(transcript_id = character(0), anchor = character(0), stringsAsFactors = FALSE)
+  flank <- list(start = event$flank_start, end = event$flank_end)
+  flanks <- if (identical(flank_side, "five_prime")) {
+    list(five_prime = flank, three_prime = NULL)
+  } else {
+    list(five_prime = NULL, three_prime = flank)
+  }
+  long_exon <- list(start = event$long_start, end = event$long_end)
+  short_exon <- list(start = event$short_start, end = event$short_end)
+  highlight_regions <- list(
+    list(start = event$flank_start, end = event$flank_end, label = "Flanking exon (rMATS)"),
+    list(start = event$long_start, end = event$long_end, label = "Long-exon form (rMATS)"),
+    list(start = event$short_start, end = event$short_end, label = "Short-exon form (rMATS)")
+  )
+  if (is.null(gene_tbl)) {
+    result <- build_rmats_arms_result(NULL, list(long = empty_match, short = empty_match), arm_labels)
+    result$highlight_regions <- highlight_regions
+    result$flanks <- list(long = flanks, short = flanks)
+    result$cassette <- list(long = long_exon, short = short_exon)
+    result$gene_transcript_ids <- character(0)
+    result$canonical_transcript_id <- NA_character_
+    return(result)
+  }
+  long_matches <- match_rmats_arm_transcripts(gene_tbl, flanks, long_exon)
+  short_matches <- match_rmats_arm_transcripts(gene_tbl, flanks, short_exon)
+  result <- build_rmats_arms_result(gene_tbl, list(long = long_matches, short = short_matches), arm_labels)
+  result$highlight_regions <- highlight_regions
+  result$flanks <- list(long = flanks, short = flanks)
+  result$cassette <- list(long = long_exon, short = short_exon)
+  result$gene_transcript_ids <- unique(gene_tbl$transcript_id)
+  canon <- unique(gene_tbl$transcript_id[gene_tbl$is_canonical])
+  result$canonical_transcript_id <- if (length(canon) > 0) canon[1] else NA_character_
+  result
+}
+
+#' For one parsed A5SS event, find every annotated transcript of its gene
+#' that structurally represents the long-exon form or the short-exon form
+#' -- see match_rmats_altss_transcripts()'s doc comment.
+#'
+#' @param event one row of parse_rmats_a5ss()'s output
+#' @param exon_index the precomputed reference_exon_index
+#' @return see match_rmats_altss_transcripts()
+match_rmats_a5ss_transcripts <- function(event, exon_index) {
+  match_rmats_altss_transcripts(event, exon_index, "three_prime",
+                                 c(long = "Long-exon form", short = "Short-exon form"))
+}
+
+#' For one parsed A3SS event, find every annotated transcript of its gene
+#' that structurally represents the long-exon form or the short-exon form
+#' -- see match_rmats_altss_transcripts()'s doc comment.
+#'
+#' @param event one row of parse_rmats_a3ss()'s output
+#' @param exon_index the precomputed reference_exon_index
+#' @return see match_rmats_altss_transcripts()
+match_rmats_a3ss_transcripts <- function(event, exon_index) {
+  match_rmats_altss_transcripts(event, exon_index, "five_prime",
+                                 c(long = "Long-exon form", short = "Short-exon form"))
 }
 
 #' Picks a sensible default "backbone" transcript for constructing an arm's
@@ -422,9 +733,18 @@ default_backbone_for_arm <- function(matches, arm_key) {
 #'
 #' @param backbone_tid Ensembl transcript id to use for everything outside
 #'   the local AS region
-#' @param flanks list(five_prime=, three_prime=) genomic coords (matches$flanks)
-#' @param cassette_exon NULL (skip/exclusion arm), or list(start=,end=) for
-#'   this arm's own middle exon (SE-inclusion, or either MXE arm)
+#' @param flanks list(five_prime=, three_prime=) genomic coords
+#'   (matches$flanks[[arm_key]]) -- EITHER side may be NULL, meaning rMATS
+#'   didn't report a flank there (A5SS/A3SS, which only ever report one
+#'   real flank) or none applies (RI's retained arm, whose single merged
+#'   exon needs no flank override on either side -- see
+#'   match_rmats_ri_transcripts()'s doc comment). A NULL side is simply
+#'   left out of the local region entirely: the backbone's own exon
+#'   structure there is kept as-is, un-clipped, since there's no rMATS-
+#'   reported boundary to override it with.
+#' @param cassette_exon NULL (skip/exclusion arm, or RI's spliced arm), or
+#'   list(start=,end=) for this arm's own middle exon (SE-inclusion, either
+#'   MXE arm, RI's retained arm, or either A5SS/A3SS arm)
 #' @param exon_index the precomputed reference_exon_index (CDS-only), used
 #'   to look up which sub-ranges of the resulting exon list are coding
 #' @return NULL if the backbone transcript's exon structure can't be
@@ -437,19 +757,13 @@ build_rmats_arm_isoform <- function(backbone_tid, flanks, cassette_exon, exon_in
   full <- bb$exons
 
   fp <- flanks$five_prime; tp <- flanks$three_prime
-  local_bounds <- c(fp$start, fp$end, tp$start, tp$end)
-  if (!is.null(cassette_exon)) local_bounds <- c(local_bounds, cassette_exon$start, cassette_exon$end)
+  local_parts <- Filter(Negate(is.null), list(fp, cassette_exon, tp))
+  local_bounds <- unlist(lapply(local_parts, function(x) c(x$start, x$end)))
   region_lo <- min(local_bounds); region_hi <- max(local_bounds)
 
   before <- full[full$end < region_lo, , drop = FALSE]
   after <- full[full$start > region_hi, , drop = FALSE]
-  local_exons <- if (is.null(cassette_exon)) {
-    rbind(data.frame(start = fp$start, end = fp$end), data.frame(start = tp$start, end = tp$end))
-  } else {
-    rbind(data.frame(start = fp$start, end = fp$end),
-          data.frame(start = cassette_exon$start, end = cassette_exon$end),
-          data.frame(start = tp$start, end = tp$end))
-  }
+  local_exons <- do.call(rbind, lapply(local_parts, function(x) data.frame(start = x$start, end = x$end)))
   all_exons <- rbind(before, local_exons, after)
   all_exons <- all_exons[order(all_exons$start), ]
 
@@ -642,14 +956,20 @@ translate_rmats_constructed_isoform <- function(synth, transcript_id, gene_name)
 }
 
 #' Human-readable genomic region text for an rMATS event, for status
-#' messages -- SE has one differential exon, MXE has two.
+#' messages -- SE and RI each have one differential exon, MXE has two,
+#' A5SS/A3SS report both alternative forms of one exon.
 #'
 #' @param event one parsed event row
-#' @param event_type "SE" or "MXE"
+#' @param event_type "SE", "MXE", "RI", "A5SS", or "A3SS"
 rmats_event_region_text <- function(event, event_type) {
   if (identical(event_type, "MXE")) {
     sprintf("%s:%s-%s and %s:%s-%s", event$chr, event$exon1_start, event$exon1_end,
             event$chr, event$exon2_start, event$exon2_end)
+  } else if (identical(event_type, "RI")) {
+    sprintf("%s:%s-%s", event$chr, event$ri_start, event$ri_end)
+  } else if (event_type %in% c("A5SS", "A3SS")) {
+    sprintf("%s:%s-%s (long) / %s:%s-%s (short)", event$chr, event$long_start, event$long_end,
+            event$chr, event$short_start, event$short_end)
   } else {
     sprintf("%s:%s-%s", event$chr, event$target_start, event$target_end)
   }
@@ -712,7 +1032,7 @@ build_rmats_full_alignment <- function(matches, exon_index, backbone_choices = l
     backbone <- backbone_choices[[k]]
     if (is.null(backbone) || !nzchar(backbone)) backbone <- default_backbone_for_arm(matches, k)
     if (is.na(backbone)) next
-    synth <- build_rmats_arm_isoform(backbone, matches$flanks, matches$cassette[[k]], exon_index)
+    synth <- build_rmats_arm_isoform(backbone, matches$flanks[[k]], matches$cassette[[k]], exon_index)
     if (is.null(synth)) next
     synth_track_dfs[[length(synth_track_dfs) + 1]] <- synth$exons
     synth_track_cds[[length(synth_track_cds) + 1]] <- synth$cds
@@ -735,3 +1055,19 @@ build_rmats_full_alignment <- function(matches, exon_index, backbone_choices = l
   build_multi_track_exon_alignment(track_dfs, track_labels, seqname, strand, track_cds = track_cds,
                                     highlight_regions = matches$highlight_regions)
 }
+
+#' Dispatch tables server.R uses to go from the user's chosen rMATS event
+#' type (the "rmats_event_type" selectInput) to the right parser/matcher
+#' pair, rather than a chain of if/else on the event type string at each
+#' of several call sites (file parsing, event-list labeling, "Find matching
+#' transcripts"). Keeping this here (not server.R) means adding a future
+#' event type only ever requires touching this file.
+RMATS_EVENT_TYPES <- c("SE", "MXE", "RI", "A5SS", "A3SS")
+RMATS_PARSERS <- list(
+  SE = parse_rmats_se, MXE = parse_rmats_mxe, RI = parse_rmats_ri,
+  A5SS = parse_rmats_a5ss, A3SS = parse_rmats_a3ss
+)
+RMATS_MATCHERS <- list(
+  SE = match_rmats_se_transcripts, MXE = match_rmats_mxe_transcripts, RI = match_rmats_ri_transcripts,
+  A5SS = match_rmats_a5ss_transcripts, A3SS = match_rmats_a3ss_transcripts
+)

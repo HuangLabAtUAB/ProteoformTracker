@@ -72,7 +72,7 @@ moved/cloned anywhere without code changes.
   isoform → proteoform), live Ensembl REST fetches with disk caching.
 - `R/fasta_pipeline.R` — Option 2 (pasted FASTA → TransDecoder ORF →
   minimap2 spliced alignment → matched known transcripts).
-- `R/rmats_adapter.R` — Option 3 (rMATS SE/MXE event → matched real
+- `R/rmats_adapter.R` — Option 3 (rMATS SE/MXE/RI/A5SS/A3SS event → matched real
   transcripts + constructed synthetic isoforms). The most recently active and
   most subtle module — see `docs/DEVLOG.md` before modifying.
 - `R/mass_calculation.R`, `R/resolving_power.R`, `R/charge_envelope.R`,

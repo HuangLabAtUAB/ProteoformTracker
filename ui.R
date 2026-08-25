@@ -351,10 +351,10 @@ fluidPage(
   conditionalPanel("input.input_mode == 'rmats' && !input.force_gene_view",
     div(class = "pt-card",
       h4("rMATS alternative-splicing results"),
-      p(class = "pt-note", "rMATS only reports the differential exon(s) and their immediate flanking exons, not the rest of the transcript -- so a full-length proteoform can't be computed from the event alone. Instead, ProteoformTracker looks up which already-annotated transcripts of the gene (in the same precomputed exon index Option 1 uses) structurally match each arm of the event (exon-inclusion vs. exon-skipping for SE; 1st-exon vs. 2nd-exon for MXE), so you get real, full-length proteoforms rather than just the local differential region. If no annotated transcript matches an arm (some events reflect a splicing pattern no single annotated transcript uses), that arm shows no candidates -- constructing a synthetic transcript for that case isn't implemented yet. Only SE (skipped-exon) and MXE (mutually-exclusive-exons) events are supported so far; A3SS/A5SS/RI are a planned follow-up."),
+      p(class = "pt-note", "rMATS only reports the differential exon(s) and their immediate flanking exons, not the rest of the transcript -- so a full-length proteoform can't be computed from the event alone. Instead, ProteoformTracker looks up which already-annotated transcripts of the gene (in the same precomputed exon index Option 1 uses) structurally match each arm of the event (exon-inclusion vs. exon-skipping for SE; 1st-exon vs. 2nd-exon for MXE; intron-retained vs. -spliced for RI; long- vs. short-exon form for A5SS/A3SS), so you get real, full-length proteoforms rather than just the local differential region. Every arm also gets a \"constructed\" synthetic isoform (a user-pickable backbone transcript with the local region replaced by rMATS' own reported exons), so an arm with no real annotated match still has something usable."),
       fluidRow(
-        column(4, selectInput("rmats_event_type", "Event type", choices = c("SE", "MXE"))),
-        column(6, fileInput("rmats_file", "Choose rMATS SE/MXE results file", accept = c(".txt", ".JC.txt")))
+        column(4, selectInput("rmats_event_type", "Event type", choices = c("SE", "MXE", "RI", "A5SS", "A3SS"))),
+        column(6, fileInput("rmats_file", "Choose rMATS results file", accept = c(".txt", ".JC.txt")))
       ),
       textOutput("rmats_parse_status"),
       selectInput("rmats_event_select", "Event to analyze", choices = character(0), width = "560px"),

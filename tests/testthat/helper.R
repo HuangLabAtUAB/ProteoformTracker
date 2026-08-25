@@ -21,6 +21,8 @@ source("../../R/digestion.R")
 source("../../R/reference_exon_index.R")
 source("../../R/ptm_spec_parser.R")
 source("../../R/ensembl_protein_fetch.R")
+source("../../R/exon_axis_alignment.R")
+source("../../R/rmats_adapter.R")
 
 TEST_PY_SCRIPT <- "../../python/ptracker_mass.py"
 
@@ -50,3 +52,11 @@ propensity_glm_model <- tryCatch({
 }, error = function(e) NULL)
 assign("propensity_glm_model", propensity_glm_model, envir = .GlobalEnv)
 glm_model_available <- !is.null(propensity_glm_model)
+
+TEST_EXON_INDEX_PATH <- "../../data/reference_exon_index.rds"
+reference_exon_index <- tryCatch({
+  if (!file.exists(TEST_EXON_INDEX_PATH)) stop("unavailable")
+  readRDS(TEST_EXON_INDEX_PATH)
+}, error = function(e) NULL)
+assign("reference_exon_index", reference_exon_index, envir = .GlobalEnv)
+exon_index_available <- !is.null(reference_exon_index)

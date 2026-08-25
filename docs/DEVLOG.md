@@ -180,14 +180,77 @@ comment).
    renders is a reset trap unless every such input's value is isolate()-read
    back as its own new default.**
 
+## RI / A5SS / A3SS support (extending the rMATS adapter beyond SE/MXE)
+
+Each new event type only needed its own `parse_rmats_*()` +
+`match_rmats_*_transcripts()` pair, exactly as the SE/MXE-era note above
+predicted — plus two small, backward-compatible generalizations to the
+shared core:
+
+- **`matches$flanks` became per-arm** (a named list keyed by arm, like
+  `matches$cassette` already was), not one object shared by both arms.
+  Needed because RI's two arms genuinely need different flanks: the
+  intron-*retained* arm's single merged exon already covers the whole
+  locus, so passing it real upstream/downstream flanks too would splice in
+  duplicate, overlapping exons; the intron-*spliced* arm needs both. SE/MXE
+  just duplicate the same flanks object under both arm keys, so nothing
+  about their behavior changed.
+- **`build_rmats_arm_isoform()`'s flanks can each independently be NULL**,
+  meaning "no rMATS-reported boundary on this side, leave the backbone's
+  own exon structure there untouched" — needed for A5SS/A3SS (which only
+  ever report ONE flanking exon, not an upstream+downstream pair) and RI's
+  retained arm (needs no flank override at all). `matches_coord()` (inside
+  `match_rmats_arm_transcripts()`) was correspondingly made NULL/NA-safe so
+  the existing "at least one flank matches" cassette-arm logic degrades
+  cleanly to "the one real flank must match" when the other side is NULL.
+
+### RI (retained intron)
+
+Two arms: **retained** (a single exon spanning the whole
+`riExonStart_0base`–`riExonEnd` range — confirmed directly against
+`tests/RI_test.txt` that this span exactly equals the union of the
+upstream and downstream flanks) and **spliced** (upstream and downstream
+present as two separate, immediately-adjacent exons, the intron properly
+removed). The retained arm's matching rule
+(`match_rmats_ri_retained_transcripts()`) is deliberately NOT an adjacency
+check like every other arm in this file — there's nothing left to check
+adjacency against once the exon already merges both flanks and the intron
+between them, so it's a direct "does any exon of this transcript exactly
+match this coordinate pair" test. The spliced arm reuses
+`match_rmats_arm_transcripts()`'s existing "both flanks directly adjacent
+to each other" branch unchanged (the same one SE's exclusion arm uses).
+
+### A5SS / A3SS (alternative 5'/3' splice site)
+
+Both share one file shape (`longExonStart_0base`/`longExonEnd`/`shortES`/
+`shortEE`/`flankingES`/`flankingEE`) and one shared implementation,
+`match_rmats_altss_transcripts()`, differing only in which side of the
+alternative exon the single reported flank represents — determined by the
+event type, **not** the strand: A5SS varies the 5' splice *donor* site
+(the boundary with the intron immediately following the alt exon in
+transcript direction, so the flank is always on its transcript-3' side);
+A3SS varies the 3' splice *acceptor* site (boundary with the intron
+immediately preceding it, flank always on the transcript-5' side). This
+was derived from the standard definition of splice-site directionality
+relative to transcription, the same genomic-vs-transcript-direction
+remapping principle `genomic_flanks_in_transcript_order()` already uses
+for SE/MXE — and cross-checked against both provided real-data test files
+(`tests/A5SS_test.txt`, `tests/A3SS_test.txt`, both `+` strand): A5SS's
+flank sits at a higher genomic coordinate than the alt exon, A3SS's at a
+lower one, matching "transcript-3'-side"/"transcript-5'-side" respectively
+on a `+` strand gene where transcript order tracks genomic order.
+**Not independently verified against a minus-strand A5SS/A3SS example** —
+none was available in the provided test files, unlike SE/MXE's flank
+convention (see above), which WAS confirmed directly against a real
+minus-strand gene (MYOM1). If a minus-strand A5SS/A3SS event ever produces
+a suspicious zero-match result, re-check this assumption first.
+
+Note the long/short forms are matched as complete, independent
+`(start, end)` coordinate pairs (like MXE's exon1/exon2) — the code never
+needs to decompose which specific edge is the "shared" vs. "varying" one
+between them, sidestepping any need to reason about that per-strand.
+
 ## Known gaps / explicitly deferred
 
-- Constructed isoforms feed MS1/MS2 fully now (translation + exon table +
-  "Add to comparison" wiring all done), but **A3SS/A5SS/RI event types are
-  not implemented** — only SE and MXE. The matching core
-  (`match_rmats_arm_transcripts()` / `build_rmats_arms_result()`) was written
-  generically enough that adding a new event type mainly means writing its
-  own `parse_rmats_*()` + `match_rmats_*_transcripts()` pair, not touching
-  the shared matching/visualization/translation code.
 - A full reference-proteome-wide MS2 fragment collision index (as opposed to
   the current small explicit-set check) is scoped but not built.
