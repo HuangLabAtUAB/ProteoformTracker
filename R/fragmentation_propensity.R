@@ -4,7 +4,7 @@
 #
 # v1 scope: HCD/CID only (b/y ions). ETD/ECD (c/z ions, flatter
 # residue-selectivity, structural-accessibility term via IUPred3/AlphaFold
-# DB) and UVPD are deferred -- see ptracker_vibe.md.
+# DB) and UVPD are deferred -- see ptracker.md.
 #
 # This is a single joint logistic regression (data/fragmentation_
 # propensity_glm.rds, built by scripts/build_propensity_glm_model.R),
@@ -156,7 +156,7 @@ fragmentation_propensity <- function(proteoform, mode = c("denatured", "native")
     stop("fragmentation_propensity() requires a proteoform object")
   }
   if (!toupper(method) %in% c("HCD", "CID")) {
-    stop("only HCD/CID are implemented for v1 -- ETD/ECD/UVPD are deferred (see ptracker_vibe.md)")
+    stop("only HCD/CID are implemented for v1 -- ETD/ECD/UVPD are deferred (see ptracker.md)")
   }
   if (is.null(glm_model)) {
     stop("Calibrated (GLM) scoring mode unavailable -- run scripts/build_propensity_glm_model.R")

@@ -5,7 +5,7 @@ specific proteoforms, can this instrument tell them apart?* Companion to
 [IsoPepTracker](https://github.com/HuangLabAtUAB/IsoPepTracker/) (bottom-up).
 
 Read these first, in this order:
-1. `ptracker_vibe.md` — the original design spec (scope, scoring model, why the
+1. `ptracker.md` — the original design spec (scope, scoring model, why the
    tool is pairwise/comparative rather than an absolute mass-cutoff check).
 2. `README.md` — phase-by-phase feature checklist (what's done vs. planned).
 3. `docs/DEVLOG.md` — narrative log of non-obvious decisions and bugs fixed

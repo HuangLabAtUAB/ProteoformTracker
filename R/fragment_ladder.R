@@ -1,7 +1,7 @@
 # Fragment ladder generation (deterministic arithmetic, per design spec).
 # Generates cumulative N-terminal (b-ion) and C-terminal (y-ion) fragment
 # masses for every backbone cleavage position -- HCD/CID ion series for v1
-# (ETD/ECD's c/z ions and UVPD are deferred; see ptracker_vibe.md).
+# (ETD/ECD's c/z ions and UVPD are deferred; see ptracker.md).
 #
 # Because terminal fragment ladders are cumulative sums along the sequence,
 # two proteoforms' ladders are identical up to their sequence divergence
