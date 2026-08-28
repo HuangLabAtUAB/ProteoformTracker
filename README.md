@@ -5,6 +5,8 @@ proteomics (TDP/MDP). Given a set of proteoforms — a specific combination of p
 post-translational modifications (PTMs) — ProteoformTracker prospectively models whether a mass
 spectrometer can actually tell them apart, before any instrument time is committed.
 
+ProteoformTracker is freely available at [https://www.proteoformtracker.org/](https://www.proteoformtracker.org/)
+
 Companion to [IsoPepTracker](https://github.com/HuangLabAtUAB/IsoPepTracker/) (bottom-up).
 
 ## What it does
@@ -84,7 +86,11 @@ Results render as interactive, client-side SVG charts (`www/ptracker_viz.js`, va
 no charting library) with pan/zoom/hover/click, live resolvability statistics, and exon-coordinate
 alignment across compared proteoforms.
 
-## Setup
+##
+
+Online portal is recommended: [https://www.proteoformtracker.org/](https://www.proteoformtracker.org/)
+
+## Setup (not necessary if Online portal is available)
 
 Requires R ≥ 4.0 and Python (a project-local virtualenv is created automatically).
 
