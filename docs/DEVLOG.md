@@ -17,8 +17,7 @@ See `README.md`'s checklist for what's built. A few decisions worth flagging:
 - **PTM propagation onto relevant isoforms is NOT applied to the
   confounding-protein set** — PTM occupancy isn't a fixed proteome property
   the way sequence is; applying a target's PTM to unrelated confounders would
-  overstate how distinguishable they are. See `ptracker.md`'s
-  limitations section.
+  overstate how distinguishable they are.
 - **Confounding-protein search is a precomputed, offline mass index**
   (`R/reference_proteome_index.R`), never recomputed per query — cross-gene
   mass collisions are a proteome-scale lookup, not a per-target computation.

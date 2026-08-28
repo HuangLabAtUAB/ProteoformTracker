@@ -12,7 +12,7 @@
 # Deliberately NOT run against the confounding-protein set: PTM occupancy
 # is sample/condition-specific biology, not a fixed proteome property, so
 # there is no canonical "modified state" of an unrelated background protein
-# to propagate onto. See known limitations in ptracker.md.
+# to propagate onto.
 
 #' Global pairwise alignment (Needleman-Wunsch, linear gap penalty).
 #' A minimal, dependency-free alignment sufficient for mapping positions

@@ -112,8 +112,7 @@ Rscript scripts/setup_python_env.R
 External CLI tools (via Homebrew), needed for the FASTA and rMATS input paths:
 `samtools`, `minimap2`, `TransDecoder.LongOrfs` / `TransDecoder.Predict`.
 
-Reference data (gitignored -- regenerate or copy separately; see `CLAUDE.md` for the full table
-and download commands):
+Reference data (gitignored -- regenerate or copy separately):
 
 ```sh
 # Reference human proteome + mass index

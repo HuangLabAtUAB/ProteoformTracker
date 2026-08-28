@@ -1011,7 +1011,7 @@ function(input, output, session) {
   # value via isolate() on re-render so toggling one candidate and then
   # e.g. changing an unrelated input doesn't silently reset every other
   # checkbox back to checked (the exact renderUI-reset-loop failure mode
-  # CLAUDE.md documents for the rMATS backbone dropdown).
+  # docs/DEVLOG.md documents for the rMATS backbone dropdown).
   output$confounder_candidate_list_ui <- renderUI({
     if (is.null(catalog()) || !analysis_ready()) return(NULL)
     a <- analysis()
