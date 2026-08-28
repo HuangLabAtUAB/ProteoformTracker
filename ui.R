@@ -138,7 +138,12 @@ fluidPage(
     div(
       div(class = "pt-logo", style = "margin-bottom: 0;", "ProteoformTracker"),
       div(class = "pt-tagline", style = "margin-bottom: 0; font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase;",
-          "Detectability planning for top/middle-down proteomics")
+          "Detectability planning for top/middle-down proteomics"),
+      div(class = "pt-note", style = "margin-top: 4px;",
+          "Tutorial & documentation: ",
+          tags$a(href = "https://huanglabatuab.github.io/proteoformtracker-docs/",
+                 target = "_blank", rel = "noopener noreferrer",
+                 "huanglabatuab.github.io/proteoformtracker-docs"))
     )
   ),
 
