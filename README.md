@@ -156,9 +156,6 @@ shiny::runApp(port = 7412, host = "127.0.0.1")
   client-side rendering.
 - `tests/testthat/` — run via `Rscript tests/testthat.R`.
 
-See `CLAUDE.md` for full developer notes (reference-data download commands, known gotchas) and
-`docs/DEVLOG.md` for the reasoning behind non-obvious design decisions.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
