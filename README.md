@@ -90,7 +90,7 @@ alignment across compared proteoforms.
 
 Online portal is recommended: [https://www.proteoformtracker.org/](https://www.proteoformtracker.org/)
 
-## Setup (not necessary if Online portal is available)
+## Setup (not necessary if online portal is available)
 
 Requires R ≥ 4.0 and Python (a project-local virtualenv is created automatically).
 
