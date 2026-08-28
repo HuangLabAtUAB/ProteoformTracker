@@ -1,11 +1,13 @@
 # ProteoformTracker
 
-An interactive R Shiny tool for planning proteoform detectability in top-down and middle-down
+An interactive online tool for planning proteoform detectability in top-down and middle-down
 proteomics (TDP/MDP). Given a set of proteoforms — a specific combination of protein isoform and
 post-translational modifications (PTMs) — ProteoformTracker prospectively models whether a mass
 spectrometer can actually tell them apart, before any instrument time is committed.
 
 ProteoformTracker is freely available at [https://www.proteoformtracker.org/](https://www.proteoformtracker.org/)
+
+Tutorial & Documents: [https://huanglabatuab.github.io/proteoformtracker-docs/](https://huanglabatuab.github.io/proteoformtracker-docs/)
 
 Companion to [IsoPepTracker](https://github.com/HuangLabAtUAB/IsoPepTracker/) (bottom-up).
 
