@@ -4,12 +4,13 @@
 # focus on what's fully testable without network access: the parsers
 # (pure, deterministic) and the matching logic against the real, local
 # reference_exon_index (gated on exon_index_available, same pattern as the
-# RF/GLM model tests -- see helper.R). tests/RI_test.txt, tests/A5SS_test.txt,
-# and tests/A3SS_test.txt are real rMATS output rows, independently
+# RF/GLM model tests -- see helper.R). tests/rmats_test/RI_test.txt,
+# tests/rmats_test/A5SS_test.txt, and tests/rmats_test/A3SS_test.txt are
+# real rMATS output rows, independently
 # verified (via IsoPepTracker) to represent solid isoform comparisons.
 
 test_that("parse_rmats_ri reads real RI output with correct 0-based/1-based coordinate conversion", {
-  events <- parse_rmats_ri("../RI_test.txt")
+  events <- parse_rmats_ri("../rmats_test/RI_test.txt")
   expect_equal(nrow(events), 1)
   e <- events[1, ]
   expect_equal(e$gene_id, "ENSG00000114416")
@@ -31,11 +32,11 @@ test_that("parse_rmats_ri reads real RI output with correct 0-based/1-based coor
 })
 
 test_that("parse_rmats_ri errors clearly on a non-RI file", {
-  expect_error(parse_rmats_ri("../A5SS_test.txt"), "Not a valid rMATS RI file")
+  expect_error(parse_rmats_ri("../rmats_test/A5SS_test.txt"), "Not a valid rMATS RI file")
 })
 
 test_that("parse_rmats_a5ss reads real A5SS output with correct coordinates", {
-  events <- parse_rmats_a5ss("../A5SS_test.txt")
+  events <- parse_rmats_a5ss("../rmats_test/A5SS_test.txt")
   expect_equal(nrow(events), 1)
   e <- events[1, ]
   expect_equal(e$gene_symbol, "PARP2")
@@ -56,7 +57,7 @@ test_that("parse_rmats_a5ss reads real A5SS output with correct coordinates", {
 })
 
 test_that("parse_rmats_a3ss reads real A3SS output with correct coordinates", {
-  events <- parse_rmats_a3ss("../A3SS_test.txt")
+  events <- parse_rmats_a3ss("../rmats_test/A3SS_test.txt")
   expect_equal(nrow(events), 1)
   e <- events[1, ]
   expect_equal(e$gene_symbol, "PDLIM5")
@@ -78,7 +79,7 @@ test_that("parse_rmats_a3ss reads real A3SS output with correct coordinates", {
 })
 
 test_that("parse_rmats_a3ss errors clearly on a non-A3SS-shaped file", {
-  expect_error(parse_rmats_a3ss("../RI_test.txt"), "Not a valid rMATS A3SS file")
+  expect_error(parse_rmats_a3ss("../rmats_test/RI_test.txt"), "Not a valid rMATS A3SS file")
 })
 
 test_that("match_rmats_ri_retained_transcripts finds only exact whole-exon matches, no adjacency required", {
@@ -118,7 +119,7 @@ test_that("match_rmats_arm_transcripts degrades a NULL-side flank to a one-flank
 
 test_that("match_rmats_ri_transcripts finds real candidates for FXR1's retained and spliced forms", {
   skip_if_not(exon_index_available, "reference_exon_index not available in this environment")
-  events <- parse_rmats_ri("../RI_test.txt")
+  events <- parse_rmats_ri("../rmats_test/RI_test.txt")
   m <- match_rmats_ri_transcripts(events[1, ], reference_exon_index)
 
   expect_setequal(names(m$arms), c("retained", "spliced"))
@@ -140,7 +141,7 @@ test_that("match_rmats_ri_transcripts finds real candidates for FXR1's retained 
 
 test_that("match_rmats_a5ss_transcripts finds real candidates anchored on the three_prime flank only", {
   skip_if_not(exon_index_available, "reference_exon_index not available in this environment")
-  events <- parse_rmats_a5ss("../A5SS_test.txt")
+  events <- parse_rmats_a5ss("../rmats_test/A5SS_test.txt")
   m <- match_rmats_a5ss_transcripts(events[1, ], reference_exon_index)
 
   expect_setequal(names(m$arms), c("long", "short"))
@@ -155,7 +156,7 @@ test_that("match_rmats_a5ss_transcripts finds real candidates anchored on the th
 
 test_that("match_rmats_a3ss_transcripts finds real candidates anchored on the five_prime flank only", {
   skip_if_not(exon_index_available, "reference_exon_index not available in this environment")
-  events <- parse_rmats_a3ss("../A3SS_test.txt")
+  events <- parse_rmats_a3ss("../rmats_test/A3SS_test.txt")
   m <- match_rmats_a3ss_transcripts(events[1, ], reference_exon_index)
 
   expect_setequal(names(m$arms), c("long", "short"))
@@ -174,12 +175,12 @@ test_that("RMATS_PARSERS/RMATS_MATCHERS dispatch tables cover every RMATS_EVENT_
 })
 
 test_that("rmats_event_region_text handles all five event types", {
-  ri <- parse_rmats_ri("../RI_test.txt")[1, ]
+  ri <- parse_rmats_ri("../rmats_test/RI_test.txt")[1, ]
   expect_equal(rmats_event_region_text(ri, "RI"), "3:180962883-180963090")
 
-  a5 <- parse_rmats_a5ss("../A5SS_test.txt")[1, ]
+  a5 <- parse_rmats_a5ss("../rmats_test/A5SS_test.txt")[1, ]
   expect_equal(rmats_event_region_text(a5, "A5SS"), "14:20344932-20345126 (long) / 14:20344932-20345087 (short)")
 
-  a3 <- parse_rmats_a3ss("../A3SS_test.txt")[1, ]
+  a3 <- parse_rmats_a3ss("../rmats_test/A3SS_test.txt")[1, ]
   expect_equal(rmats_event_region_text(a3, "A3SS"), "4:94575616-94576034 (long) / 4:94575943-94576034 (short)")
 })
