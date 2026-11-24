@@ -126,7 +126,8 @@ Rscript scripts/build_exon_index.R
 ```
 
 The FASTA input path (Option 2) and rMATS's constructed-synthetic-isoform fallback (Option 3)
-additionally need a local indexed genome FASTA -- there's no wrapper script for this one, just:
+additionally need a local indexed genome FASTA, which can be copied from: [box shared folder](https://uab.box.com/s/7oz7heq5bllft6naiz48alay8hu57trg);
+Or to regenerate them:
 
 ```sh
 # Download + decompress the primary-assembly genome FASTA (~3GB)
@@ -139,11 +140,6 @@ mv reference/genome/Homo_sapiens.GRCh38.dna.primary_assembly.fa reference/genome
 samtools faidx reference/genome/GRCh38.fa
 minimap2 -d reference/genome/GRCh38.mmi reference/genome/GRCh38.fa
 ```
-
-Without these two files, Option 2 and the constructed-isoform fallback in Option 3 report a clear
-status message rather than failing silently; every other feature (Option 1, matched real
-annotated-transcript isoforms in Option 3, MS1/MS2 scoring, confounder search, middle-down) is
-unaffected.
 
 Run the test suite:
 
