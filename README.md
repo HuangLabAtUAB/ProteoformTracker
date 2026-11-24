@@ -126,8 +126,9 @@ Rscript scripts/build_exon_index.R
 ```
 
 The FASTA input path (Option 2) and rMATS's constructed-synthetic-isoform fallback (Option 3)
-additionally need a local indexed genome FASTA, which can be copied from: [box shared folder](https://uab.box.com/s/7oz7heq5bllft6naiz48alay8hu57trg);
-Or to regenerate them:
+additionally need a local indexed genome FASTA, which can be copied directly from this
+[Box shared folder](https://uab.box.com/s/7oz7heq5bllft6naiz48alay8hu57trg) (faster than rebuilding),
+or regenerated from scratch:
 
 ```sh
 # Download + decompress the primary-assembly genome FASTA (~3GB)
