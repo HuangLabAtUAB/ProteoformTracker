@@ -366,6 +366,7 @@ fluidPage(
       actionButton("btn_run_rmats", "Find matching transcripts", class = "btn-primary"),
       br(), br(),
       textOutput("rmats_status"),
+      textOutput("rmats_genome_note"),
       uiOutput("rmats_results_ui"),
       # Static (not dynamically-generated) SVG/zoom/legend containers, same
       # as Option 1's s1-ladder/s1-ms1 -- unlike Option 2's exon-align

@@ -188,12 +188,13 @@ function(input, output, session) {
   output$rmats_status <- renderText("")
   output$rmats_results_ui <- renderUI(NULL)
   output$rmats_parse_status <- renderText("")
+  output$rmats_genome_note <- renderText("")
   for (nm in c("gene_status", "isoform_catalog_ui", "ptm_warnings_ui", "proteoform_table",
                "stale_notice", "viz_script", "confounder_status",
                "confounder_candidate_list_ui", "viz_script_s2", "confounder_comparison_status",
                "digestion_candidates_ui", "digestion_coverage_text", "digestion_summary_text",
                "digestion_per_parent_ui", "fasta_status", "fasta_results_ui",
-               "rmats_status", "rmats_results_ui", "rmats_parse_status")) {
+               "rmats_status", "rmats_results_ui", "rmats_parse_status", "rmats_genome_note")) {
     outputOptions(output, nm, suspendWhenHidden = FALSE)
   }
 
@@ -1637,6 +1638,22 @@ function(input, output, session) {
     matches <- rmats_matches()
     event <- rmats_event()
     if (is.null(matches) || is.null(event)) return(list())
+    # Graceful failure when the ~3GB reference genome FASTA (gitignored,
+    # one-time manual build per CLAUDE.md) isn't deployed: fetch_genome_dna()
+    # already fails safely (tryCatch -> NULL) per DNA fragment, but without
+    # this upfront check that failure is silent -- the constructed isoform
+    # just quietly disappears from the candidate list with no explanation,
+    # which is worse than an error. Real annotated-transcript matches don't
+    # need this file at all and are unaffected either way.
+    if (!file.exists(RMATS_GENOME_FASTA) || !file.exists(paste0(RMATS_GENOME_FASTA, ".fai"))) {
+      output$rmats_genome_note <- renderText(paste(
+        "Note: the reference genome FASTA is not available on this server, so constructed",
+        "synthetic isoforms (for arms with no fully-matching annotated transcript) cannot be",
+        "translated right now. Matched real annotated transcripts above are unaffected."
+      ))
+      return(list())
+    }
+    output$rmats_genome_note <- renderText("")
     arm_keys <- names(matches$arms)
     result <- list()
     withProgress(message = "Translating constructed isoform(s)...", value = 0.3, {
